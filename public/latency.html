@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Latency Time Series - Latency Dashboard</title>
+    <script src="https://unpkg.com/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/uplot@1.6.30/dist/uPlot.min.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 20px;
+            background: #f8fafc;
+            color: #1a202c;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        .controls {
+            background: white;
+            padding: 18px 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            margin-bottom: 24px;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .chart-container {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            margin-bottom: 24px;
+        }
+
+        #chart {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .stats-container {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 16px;
+            background: #f7fafc;
+            border-radius: 8px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2b6cb0;
+        }
+
+        .stat-label {
+            color: #4a5568;
+            font-size: 14px;
+            margin-top: 4px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #7f8c8d;
+        }
+
+        .refresh-btn {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            line-height: 1;
+            margin: -2px 0;
+            transition: background 0.3s ease;
+        }
+
+        .refresh-btn:hover {
+            background: #2980b9;
+        }
+
+        .refresh-btn:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+        }
+
+        .time-range {
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }
+
+        .legend {
+            margin-top: 10px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            justify-content: center;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 3px;
+            border-radius: 2px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 Latency Time Series</h1>
+            <p>Real-time latency monitoring across brokers - Last 1 Hour</p>
+        </div>
+
+        <div class="controls">
+            <button id="refreshBtn" class="refresh-btn">🔄 Refresh</button>
+            <span class="time-range" id="timeRange">Loading...</span>
+            <div style="margin-left: auto;">
+                <span id="lastUpdate" class="time-range"></span>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <div id="loading" class="loading">Loading latency data...</div>
+            <div id="chart" style="display: none;"></div>
+            <div id="legend" class="legend"></div>
+        </div>
+
+        <div class="stats-container" id="statsContainer">
+            <!-- Stats will be populated by JavaScript -->
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let data = null;
+        let refreshInterval = null;
+
+        // Color palette for different brokers
+        const colors = [
+            '#e74c3c', // Red
+            '#3498db', // Blue
+            '#2ecc71', // Green
+            '#f39c12', // Orange
+            '#9b59b6', // Purple
+            '#1abc9c', // Turquoise
+            '#34495e', // Dark Gray
+            '#e67e22', // Carrot
+            '#fd79a8', // Pink
+            '#00b894'  // Mint
+        ];
+
+        function formatTime(timestamp) {
+            return new Date(timestamp * 1000).toLocaleTimeString();
+        }
+
+        function formatLatency(ms) {
+            return `${ms.toFixed(1)}ms`;
+        }
+
+        async function fetchData() {
+            try {
+                const response = await fetch('/api/latency/timeseries');
+                const rawData = await response.json();
+
+                if (rawData.length === 0) {
+                    document.getElementById('loading').innerHTML = 'No data available for the last hour';
+                    return;
+                }
+
+                // Group data by broker
+                const brokerData = {};
+                const timestamps = new Set();
+
+                rawData.forEach(row => {
+                    if (!brokerData[row.broker]) {
+                        brokerData[row.broker] = {};
+                    }
+                    brokerData[row.broker][row.timestamp] = row.latency_ms;
+                    timestamps.add(row.timestamp);
+                });
+
+                // Convert to sorted array
+                const sortedTimestamps = Array.from(timestamps).sort((a, b) => a - b);
+                const brokers = Object.keys(brokerData).sort();
+
+                // Prepare uPlot data format
+                const plotData = [sortedTimestamps];
+                const series = [{
+                    label: 'Time'
+                }];
+
+                brokers.forEach((broker, index) => {
+                    const brokerValues = sortedTimestamps.map(ts =>
+                        brokerData[broker][ts] || null
+                    );
+                    plotData.push(brokerValues);
+
+                    series.push({
+                        label: broker,
+                        stroke: colors[index % colors.length],
+                        width: 2,
+                        scale: 'ms',
+                        value: (self, rawValue) => rawValue == null ? null : `${rawValue.toFixed(1)}ms`
+                    });
+                });
+
+                data = plotData;
+                createChart(data, series);
+                updateStats(rawData, brokers);
+                updateTimeRange(sortedTimestamps);
+
+            } catch (error) {
+                console.error('Error fetching data:', error);
+                document.getElementById('loading').innerHTML = 'Error loading data';
+            }
+        }
+
+        function createChart(data, series) {
+            const chartContainer = document.getElementById('chart');
+
+            if (chart) {
+                chart.destroy();
+            }
+
+            const opts = {
+                title: "Latency Over Time (Latest 1 Hour)",
+                width: 1280,
+                height: 720,
+                series: series,
+                scales: {
+                    x: {
+                        auto: true
+                    },
+                    ms: {
+                        auto: true
+                    }
+                },
+                axes: [
+                    {
+                        values: (self, ticks) => ticks.map(t => formatTime(t))
+                    },
+                    {
+                        scale: 'ms',
+                        values: (self, ticks) => ticks.map(t => `${t.toFixed(1)}ms`)
+                    }
+                ],
+                padding: [20, 40, 20, 60]
+            };
+
+            chart = new uPlot(opts, data, chartContainer);
+
+            document.getElementById('loading').style.display = 'none';
+            chartContainer.style.display = 'block';
+
+            // Update legend
+            updateLegend(series.slice(1)); // Skip time series
+        }
+
+        function updateLegend(series) {
+            const legend = document.getElementById('legend');
+            legend.innerHTML = '';
+
+            series.forEach(s => {
+                const item = document.createElement('div');
+                item.className = 'legend-item';
+                item.innerHTML = `
+                    <div class="legend-color" style="background-color: ${s.stroke}"></div>
+                    <span>${s.label}</span>
+                `;
+                legend.appendChild(item);
+            });
+        }
+
+        function updateStats(rawData, brokers) {
+            const statsContainer = document.getElementById('statsContainer');
+            statsContainer.innerHTML = '';
+
+            // Calculate overall stats
+            const allLatencies = rawData.map(row => row.latency_ms);
+            const avgLatency = allLatencies.reduce((a, b) => a + b, 0) / allLatencies.length;
+            const maxLatency = Math.max(...allLatencies);
+            const p99Latency = allLatencies.sort((a, b) => a - b)[Math.floor(allLatencies.length * 0.99)];
+
+            // Overall stats
+            statsContainer.innerHTML = `
+                <div class="stat-item">
+                    <div class="stat-value">${allLatencies.length.toLocaleString()}</div>
+                    <div class="stat-label">Total Samples</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${avgLatency.toFixed(2)}ms</div>
+                    <div class="stat-label">Average Latency</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${maxLatency.toFixed(2)}ms</div>
+                    <div class="stat-label">Max Latency</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${p99Latency.toFixed(2)}ms</div>
+                    <div class="stat-label">99th Percentile</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${brokers.length}</div>
+                    <div class="stat-label">Active Brokers</div>
+                </div>
+            `;
+        }
+
+        function updateTimeRange(timestamps) {
+            if (timestamps.length > 0) {
+                const start = new Date(timestamps[0] * 1000);
+                const end = new Date(timestamps[timestamps.length - 1] * 1000);
+                document.getElementById('timeRange').innerHTML =
+                    `${start.toLocaleTimeString()} - ${end.toLocaleTimeString()}`;
+            }
+
+            document.getElementById('lastUpdate').innerHTML =
+                `Last updated: ${new Date().toLocaleTimeString()}`;
+        }
+
+        function startAutoRefresh() {
+            refreshInterval = setInterval(fetchData, 30000); // Refresh every 30 seconds
+        }
+
+        function stopAutoRefresh() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+        }
+
+        // Event listeners
+        document.getElementById('refreshBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('refreshBtn');
+            btn.disabled = true;
+            btn.innerHTML = '🔄 Refreshing...';
+
+            await fetchData();
+
+            btn.disabled = false;
+            btn.innerHTML = '🔄 Refresh';
+        });
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            if (chart && data) {
+                chart.setSize({
+                    width: 1280,
+                    height: 720
+                });
+            }
+        });
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchData();
+            startAutoRefresh();
+        });
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', stopAutoRefresh);
+    </script>
+</body>
+
+</html>

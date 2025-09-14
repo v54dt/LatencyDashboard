@@ -25,6 +25,7 @@ app.get('/', (req, res) => {
     <ul>
       <li><a href="/dashboard">Dashboard</a></li>
       <li><a href="/latency-heatmap">Latency Heatmap</a></li>
+      <li><a href="/latency">Latency Time Series</a></li>
       <li><a href="/api/latency">API Latency Data</a></li>
     </ul>
   `);
@@ -32,6 +33,10 @@ app.get('/', (req, res) => {
 
 app.get('/latency-heatmap', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'heatmap.html'));
+});
+
+app.get('/latency', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'latency.html'));
 });
 
 app.get('/api/latency', async (req, res) => {
@@ -42,16 +47,43 @@ app.get('/api/latency', async (req, res) => {
         broker,
         latency_ms
       FROM order_latency
+      WHERE DATE(timestamp) = CURRENT_DATE
+        AND EXTRACT(hour FROM timestamp) >= 0
+        AND EXTRACT(hour FROM timestamp) < 6
       ORDER BY timestamp ASC
     `);
-    
+
     const processedRows = result.rows.map(row => ({
       timestamp: parseFloat(row.timestamp),
       broker: row.broker,
       latency_ms: parseFloat(row.latency_ms)
     }));
-    
+
     res.json(processedRows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.get('/api/latency/timeseries', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) as timestamp,
+        broker,
+        latency_ms
+      FROM order_latency
+      WHERE timestamp >= NOW() - INTERVAL '1 hour'
+        AND timestamp <= NOW()
+      ORDER BY timestamp ASC
+    `);
+
+    res.json(result.rows.map(row => ({
+      timestamp: parseFloat(row.timestamp),
+      broker: row.broker,
+      latency_ms: parseFloat(row.latency_ms)
+    })));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
