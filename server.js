@@ -16,17 +16,15 @@ const pool = new Pool({
 });
 
 app.use(cors());
+app.use(express.json());
 app.use(express.static('public'));
 
 app.get('/', (req, res) => {
   res.send(`
-    <h1>Latency Dashboard API</h1>
-    <p>Server is running successfully!</p>
+    <h1>Latency Dashboard</h1>
     <ul>
-      <li><a href="/dashboard">Dashboard</a></li>
       <li><a href="/latency-heatmap">Latency Heatmap</a></li>
       <li><a href="/latency">Latency Time Series</a></li>
-      <li><a href="/api/latency">API Latency Data</a></li>
     </ul>
   `);
 });
@@ -86,6 +84,81 @@ app.get('/api/latency/timeseries', async (req, res) => {
     })));
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.post('/api/latency', async (req, res) => {
+  try {
+    const { broker, latency_ms, timestamp, symbol, side, price, volume } = req.body;
+
+    if (!broker || latency_ms === undefined) {
+      return res.status(400).json({
+        error: 'Missing required fields: broker and latency_ms are required'
+      });
+    }
+
+    if (typeof broker !== 'string' || broker.length === 0 || broker.length > 50) {
+      return res.status(400).json({
+        error: 'broker must be a non-empty string with max 50 characters'
+      });
+    }
+
+    if (typeof latency_ms !== 'number' || latency_ms < 0 || !isFinite(latency_ms)) {
+      return res.status(400).json({
+        error: 'latency_ms must be a non-negative finite number'
+      });
+    }
+
+    const timestampToUse = timestamp ? new Date(timestamp) : new Date();
+    if (timestamp && isNaN(timestampToUse.getTime())) {
+      return res.status(400).json({
+        error: 'Invalid timestamp format'
+      });
+    }
+
+    if (symbol !== undefined && symbol !== null) {
+      if (typeof symbol !== 'string' || symbol.length > 20) {
+        return res.status(400).json({
+          error: 'symbol must be a string with max 20 characters'
+        });
+      }
+    }
+
+    if (side !== undefined && side !== null) {
+      if (typeof side !== 'string' || side.length !== 1) {
+        return res.status(400).json({
+          error: 'side must be a single character (B/S)'
+        });
+      }
+    }
+
+    if (price !== undefined && price !== null) {
+      if (typeof price !== 'number' || price < 0 || !isFinite(price)) {
+        return res.status(400).json({
+          error: 'price must be a non-negative finite number'
+        });
+      }
+    }
+
+    if (volume !== undefined && volume !== null) {
+      if (!Number.isInteger(volume) || volume < 0) {
+        return res.status(400).json({
+          error: 'volume must be a non-negative integer'
+        });
+      }
+    }
+
+    const result = await pool.query(
+      'INSERT INTO order_latency (timestamp, broker, latency_ms, symbol, side, price, volume) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [timestampToUse, broker, latency_ms, symbol, side, price, volume]
+    );
+
+    res.status(201).json({
+      message: 'Data inserted successfully'
+    });
+  } catch (err) {
+    console.error('Error inserting data:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });
