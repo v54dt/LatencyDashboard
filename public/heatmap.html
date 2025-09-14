@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Latency Heatmap</title>
+    <script src="https://unpkg.com/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/uplot@1.6.30/dist/uPlot.min.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 20px;
+            background: #f8fafc;
+            color: #1a202c;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            margin-bottom: 24px;
+        }
+
+        h1 {
+            color: #2d3748;
+            text-align: center;
+            margin: 0;
+            font-size: 28px;
+            font-weight: 600;
+        }
+
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            margin-bottom: 24px;
+            display: flex;
+            gap: 24px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .control-group label {
+            font-weight: 500;
+            color: #4a5568;
+            min-width: 120px;
+        }
+
+        .control-group input[type="range"] {
+            width: 200px;
+        }
+
+        .control-group span {
+            color: #2d3748;
+            font-weight: 600;
+            min-width: 40px;
+        }
+
+        .chart-container {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            margin-bottom: 24px;
+        }
+
+        #heatmap {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* 調整Y軸標籤位置 */
+        #heatmap .u-axis--y .u-label {
+            transform: translateX(-40px) !important;
+        }
+
+        /* 如果上面不行，試試這個 */
+        #heatmap .u-label {
+            transform: translateX(-40px) !important;
+        }
+
+        /* 隱藏圖例/系列標籤 */
+        #heatmap .u-legend {
+            display: none !important;
+        }
+
+        /* 隱藏系列標籤 */
+        .u-series {
+            display: none !important;
+        }
+
+        .stats {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 16px;
+            background: #f7fafc;
+            border-radius: 8px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2b6cb0;
+        }
+
+        .stat-label {
+            color: #4a5568;
+            font-size: 14px;
+            margin-top: 4px;
+        }
+
+        .legend {
+            background: white;
+            padding: 16px;
+            border-radius: 8px;
+            margin-top: 16px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .legend-title {
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: #2d3748;
+        }
+
+        .legend-gradient {
+            height: 20px;
+            border-radius: 4px;
+            background: linear-gradient(to right, #fff, #ffa500, #ff0000, #800080);
+            margin-bottom: 8px;
+        }
+
+        .legend-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #4a5568;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Latency Heatmap Dashboard</h1>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="brokerSelect">Broker:</label>
+                <select id="brokerSelect">
+                    <option value="all">All Brokers</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <div id="heatmap"></div>
+            <div class="legend">
+                <div class="legend-title">Density Scale</div>
+                <div class="legend-gradient"></div>
+                <div class="legend-labels">
+                    <span>Low</span>
+                    <span>Medium</span>
+                    <span>High</span>
+                    <span>Very High</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="stats" id="stats">
+            <!-- Stats will be populated by JavaScript -->
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let currentData = [];
+
+        // Metal gradient color palette (16 colors)
+        const COLORS = [
+            "#ffffff", "#fff2e6", "#ffe6cc", "#ffd9b3",
+            "#ffcc99", "#ffbf80", "#ffb366", "#ffa64d",
+            "#ff9933", "#ff8c1a", "#ff8000", "#e67300",
+            "#cc6600", "#b35900", "#994d00", "#800040"
+        ];
+
+        async function fetchData() {
+            try {
+                const response = await fetch('/api/latency');
+                const data = await response.json();
+                return data;
+            } catch (error) {
+                console.warn('API not available, using mock data');
+                return generateMockData();
+            }
+        }
+
+        function generateMockData() {
+            const data = [];
+            const now = Date.now();
+            const start = now - (6 * 60 * 60 * 1000); // 6 hours ago
+            const brokers = ['Broker-A', 'Broker-B', 'Broker-C', 'Broker-D', 'Broker-E'];
+
+            // Generate data for each broker
+            brokers.forEach(broker => {
+                const brokerOffset = Math.random() * 2; // Different base latency per broker
+                for (let t = start; t < now; t += Math.random() * 5000 + 1000) { // Random intervals
+                    const baseLatency = 5 + brokerOffset + Math.sin((t - start) / 1000000) * 3;
+                    const noise = Math.random() * 2;
+                    const spike = Math.random() < 0.03 ? Math.random() * 30 : 0;
+
+                    data.push({
+                        timestamp: Math.floor(t / 1000),
+                        latency_ms: Math.max(0.1, baseLatency + noise + spike),
+                        broker: broker
+                    });
+                }
+            });
+
+            return data.sort((a, b) => a.timestamp - b.timestamp);
+        }
+
+        // Official-style heatmap plugin
+        function heatmapPlugin(bucketSize) {
+            function fillStyle(count, minCount, maxCount) {
+                // HSL color mapping: cyan to magenta based on intensity
+                return `hsla(${180 + count/maxCount * 180}, 80%, 50%, 1)`;
+            }
+
+            return {
+                hooks: {
+                    draw: [u => {
+                        const { ctx, data } = u;
+
+                        if (!data[3] || !data[4]) return;
+
+                        const yBins = data[3];    // binned y values per timestamp
+                        const yCounts = data[4];  // counts per bin per timestamp
+
+                        // Pre-calculate rectangle height based on bucket size
+                        const yHgt = Math.abs(u.valToPos(bucketSize, 'y', true) - u.valToPos(0, 'y', true));
+
+                        ctx.save();
+                        ctx.beginPath();
+                        ctx.rect(u.bbox.left, u.bbox.top, u.bbox.width, u.bbox.height);
+                        ctx.clip();
+
+                        yBins.forEach((bins, xi) => {
+                            if (!bins || bins.length === 0) return;
+
+                            // Convert timestamp to x-pixel position
+                            const xPos = Math.round(u.valToPos(data[0][xi], 'x', true));
+
+                            // Find max count for this timestamp (local scaling)
+                            const maxCount = Math.max(...yCounts[xi]);
+                            if (maxCount === 0) return;
+
+                            bins.forEach((yVal, yi) => {
+                                // Convert y-value to y-pixel position
+                                const yPos = Math.round(u.valToPos(yVal, 'y', true));
+                                const count = yCounts[xi][yi];
+
+                                if (count > 0) {
+                                    // Set color based on count intensity
+                                    ctx.fillStyle = fillStyle(count, 1, maxCount);
+                                    ctx.fillRect(
+                                        xPos - 5,     // x position (centered)
+                                        yPos - yHgt,  // y position (top of bucket)
+                                        10,           // rectangle width
+                                        yHgt          // rectangle height (bucket size in pixels)
+                                    );
+                                }
+                            });
+                        });
+
+                        ctx.restore();
+                    }]
+                }
+            };
+        }
+
+        function createEmptyChart(startTime, endTime) {
+            const timeInterval = 300; // 5 minutes
+            const timeSlots = Math.ceil((endTime - startTime) / timeInterval);
+            const timestamps = [];
+
+            for (let i = 0; i < timeSlots; i++) {
+                const timestamp = startTime + (i * timeInterval);
+                timestamps.push(timestamp);
+            }
+
+            // Create empty data structure
+            const plotData = [
+                timestamps,                    // x timestamps
+                timestamps.map(() => 0),      // min y values (dummy)
+                timestamps.map(() => 100),    // max y values (dummy)
+                [],                          // empty bins
+                []                           // empty counts
+            ];
+
+            const series = [
+                { label: "Time" },
+                { label: "Min", show: false },
+                { label: "Max", show: false },
+                { label: "Bins", show: false },
+                { label: "Counts", show: false }
+            ];
+
+            const opts = {
+                title: "Latency Heatmap",
+                width: 1280,
+                height: 720,
+                series: series,
+                scales: {
+                    y: {
+                        auto: false,
+                        range: [0, 100] // Default range when no data
+                    }
+                },
+                axes: [
+                    {
+                        label: "Time (UTC+8)",
+                        values: (u, vals) => vals.map(v => {
+                            const date = new Date(v * 1000);
+                            return date.toLocaleTimeString('en-US', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                hour12: false
+                            });
+                        })
+                    },
+                    {
+                        // label: "Latency (ms)",
+                        side: 3,
+                        values: (u, vals) => vals.map(v => v.toFixed(1) + "ms")
+                    }
+                ],
+                padding: [20, 40, 20, 60]
+                // No plugins needed for empty chart
+            };
+
+            if (chart) {
+                chart.destroy();
+            }
+
+            chart = new uPlot(opts, plotData, document.getElementById('heatmap'));
+        }
+
+        function createHeatmap(data) {
+            const selectedBroker = document.getElementById('brokerSelect').value;
+            const now = new Date();
+            now.setHours(8, 0, 0, 0); // Start at 8:00 AM
+            const startTime = Math.floor(now.getTime() / 1000);
+            const endTime = startTime + (6 * 60 * 60); // Fixed 6 hours (08:00-14:00)
+
+            // Filter data for time range and broker
+            let filteredData = data.filter(d =>
+                d.timestamp >= startTime &&
+                d.timestamp <= endTime &&
+                d.latency_ms > 0
+            );
+
+            if (selectedBroker !== 'all') {
+                filteredData = filteredData.filter(d => d.broker === selectedBroker);
+            }
+
+            if (filteredData.length === 0) {
+                updateStats({ total: 0, avg: 0, max: 0, p99: 0 });
+                createEmptyChart(startTime, endTime);
+                return;
+            }
+
+            // Calculate statistics
+            const latencies = filteredData.map(d => d.latency_ms).sort((a, b) => a - b);
+            const stats = {
+                total: latencies.length,
+                avg: latencies.reduce((a, b) => a + b, 0) / latencies.length,
+                max: latencies[latencies.length - 1],
+                p99: latencies[Math.floor(latencies.length * 0.99)]
+            };
+            updateStats(stats);
+
+            // Auto-calculate optimal bucket parameters
+            const minLatency = Math.min(...latencies);
+            const maxLatency = Math.max(...latencies);
+            const range = maxLatency - minLatency;
+
+            // Optimal bucket size: aim for ~20 buckets for good resolution
+            const bucketSize = Math.max(0.1, range / 20);
+            const timeInterval = 300; // 5 minutes
+
+            // Group data by timestamps (like official implementation)
+            const timeSlots = Math.ceil((endTime - startTime) / timeInterval);
+            const timestampGroups = Array(timeSlots).fill(null).map(() => []);
+
+            filteredData.forEach(d => {
+                const timeSlot = Math.floor((d.timestamp - startTime) / timeInterval);
+                if (timeSlot >= 0 && timeSlot < timeSlots) {
+                    timestampGroups[timeSlot].push(d.latency_ms);
+                }
+            });
+
+            // Create aggregated data like official implementation
+            const timestamps = [];
+            const yBins = [];    // binned y values per timestamp
+            const yCounts = [];  // counts per bin per timestamp
+
+            for (let t = 0; t < timeSlots; t++) {
+                const timestamp = startTime + (t * timeInterval);
+                timestamps.push(timestamp);
+
+                const values = timestampGroups[t];
+                if (values.length === 0) {
+                    yBins.push([]);
+                    yCounts.push([]);
+                    continue;
+                }
+
+                // Bucket the values for this timestamp
+                const bucketMap = new Map();
+                values.forEach(v => {
+                    const bucketVal = Math.floor((v - minLatency) / bucketSize) * bucketSize + minLatency;
+                    bucketMap.set(bucketVal, (bucketMap.get(bucketVal) || 0) + 1);
+                });
+
+                // Sort by bucket value
+                const sortedBuckets = [...bucketMap.entries()].sort((a, b) => a[0] - b[0]);
+                yBins.push(sortedBuckets.map(([val, _]) => val));
+                yCounts.push(sortedBuckets.map(([_, count]) => count));
+            }
+
+            // Prepare data for uPlot (official format)
+            const plotData = [
+                timestamps,                           // x timestamps
+                timestamps.map(() => minLatency),     // min y values (dummy)
+                timestamps.map(() => maxLatency),     // max y values (dummy)
+                yBins,                               // binned y values per timestamp
+                yCounts                              // counts per bin per timestamp
+            ];
+
+            const series = [
+                { label: "Time" },
+                { label: "Min", show: false },
+                { label: "Max", show: false },
+                { label: "Bins", show: false },
+                { label: "Counts", show: false }
+            ];
+
+            const opts = {
+                title: "Latency Heatmap",
+                width: 1280,
+                height: 720,
+                series: series,
+                scales: {
+                    y: {
+                        auto: true,
+                        range: [minLatency * 0.95, maxLatency * 1.05] // Auto Y-axis with padding
+                    }
+                },
+                axes: [
+                    {
+                        label: "Time (UTC+8)",
+                        values: (u, vals) => vals.map(v => {
+                            const date = new Date(v * 1000);
+                            return date.toLocaleTimeString('en-US', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                hour12: false
+                            });
+                        })
+                    },
+                    {
+                        // label: "Latency (ms)",
+                        side: 3,
+                        values: (u, vals) => vals.map(v => v.toFixed(1) + "ms")
+                    }
+                ],
+                padding: [20, 40, 20, 60],
+                plugins: [heatmapPlugin(bucketSize)]
+            };
+
+            if (chart) {
+                chart.destroy();
+            }
+
+            chart = new uPlot(opts, plotData, document.getElementById('heatmap'));
+        }
+
+        function updateStats(stats) {
+            const statsContainer = document.getElementById('stats');
+            statsContainer.innerHTML = `
+                <div class="stat-item">
+                    <div class="stat-value">${stats.total.toLocaleString()}</div>
+                    <div class="stat-label">Total Samples</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${stats.avg.toFixed(2)}ms</div>
+                    <div class="stat-label">Average Latency</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${stats.max.toFixed(2)}ms</div>
+                    <div class="stat-label">Max Latency</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${stats.p99.toFixed(2)}ms</div>
+                    <div class="stat-label">99th Percentile</div>
+                </div>
+            `;
+        }
+
+        function updateChart() {
+            createHeatmap(currentData);
+        }
+
+        function populateBrokerList(data) {
+            const brokers = [...new Set(data.map(d => d.broker).filter(Boolean))].sort();
+            const brokerSelect = document.getElementById('brokerSelect');
+
+            // Clear existing options except "All Brokers"
+            brokerSelect.innerHTML = '<option value="all">All Brokers</option>';
+
+            // Add broker options
+            brokers.forEach(broker => {
+                const option = document.createElement('option');
+                option.value = broker;
+                option.textContent = broker;
+                brokerSelect.appendChild(option);
+            });
+        }
+
+        // Event listeners
+        document.getElementById('brokerSelect').addEventListener('change', updateChart);
+
+        // Initialize
+        fetchData().then(data => {
+            currentData = data;
+            populateBrokerList(data);
+            updateChart();
+        }).catch(error => {
+            console.error('Failed to load data:', error);
+            currentData = generateMockData();
+            populateBrokerList(currentData);
+            updateChart();
+        });
+
+        // Auto-refresh every 30 seconds
+        setInterval(async () => {
+            try {
+                const newData = await fetchData();
+                currentData = newData;
+                updateChart();
+            } catch (error) {
+                console.warn('Failed to refresh data:', error);
+            }
+        }, 30000);
+    </script>
+</body>
+
+</html>
