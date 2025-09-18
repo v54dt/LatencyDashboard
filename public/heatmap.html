@@ -208,6 +208,11 @@
             try {
                 const response = await fetch('/api/latency');
                 const data = await response.json();
+                console.log('Fetched data:', data.length, 'items');
+                if (data.length > 0) {
+                    console.log('First item:', data[0]);
+                    console.log('Last item:', data[data.length - 1]);
+                }
                 return data;
             } catch (error) {
                 console.warn('API not available, using mock data');
@@ -367,7 +372,11 @@
         }
 
         function createHeatmap(data) {
+            console.log('createHeatmap called with data length:', data.length);
             const selectedBroker = document.getElementById('brokerSelect').value;
+            console.log('Selected broker:', selectedBroker);
+
+            // Fixed time range: 8:00-14:00 (6 hours)
             const now = new Date();
             now.setHours(8, 0, 0, 0); // Start at 8:00 AM
             const startTime = Math.floor(now.getTime() / 1000);
@@ -552,7 +561,9 @@
         document.getElementById('brokerSelect').addEventListener('change', updateChart);
 
         // Initialize
+        console.log('Starting heatmap initialization...');
         fetchData().then(data => {
+            console.log('Data fetched successfully');
             currentData = data;
             populateBrokerList(data);
             updateChart();

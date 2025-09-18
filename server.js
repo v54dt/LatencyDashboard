@@ -4,8 +4,13 @@ const { Pool } = require('pg');
 const cors = require('cors');
 const path = require('path');
 
-const app = express();
-const port = process.env.APP_PORT || 3000;
+// Create separate apps for read and write operations
+const readApp = express();
+const writeApp = express();
+
+// Port configuration
+const readPort = process.env.APP_PORT || 3000;
+const writePort = process.env.WRITE_PORT || 3001;
 
 const pool = new Pool({
   user: process.env.POSTGRES_USER,
@@ -15,11 +20,17 @@ const pool = new Pool({
   port: process.env.DB_PORT || 5432,
 });
 
-app.use(cors());
-app.use(express.json());
-app.use(express.static('public'));
+// Configure read app (GET requests)
+readApp.use(cors());
+readApp.use(express.json());
+readApp.use(express.static('public'));
 
-app.get('/', (req, res) => {
+// Configure write app (POST requests)
+writeApp.use(cors());
+writeApp.use(express.json());
+
+// READ APP ROUTES (GET requests)
+readApp.get('/', (req, res) => {
   res.send(`
     <h1>Latency Dashboard</h1>
     <ul>
@@ -29,25 +40,25 @@ app.get('/', (req, res) => {
   `);
 });
 
-app.get('/latency-heatmap', (req, res) => {
+readApp.get('/latency-heatmap', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'heatmap.html'));
 });
 
-app.get('/latency', (req, res) => {
+readApp.get('/latency', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'latency.html'));
 });
 
-app.get('/api/latency', async (req, res) => {
+readApp.get('/api/latency', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
-        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) as timestamp,
+        EXTRACT(EPOCH FROM date_trunc('second', timestamp))-8*60*60 as timestamp,
         broker,
         latency_ms
       FROM order_latency
       WHERE DATE(timestamp) = CURRENT_DATE
-        AND EXTRACT(hour FROM timestamp) >= 0
-        AND EXTRACT(hour FROM timestamp) < 6
+        AND EXTRACT(hour FROM timestamp) >= 8
+        AND EXTRACT(hour FROM timestamp) <= 14
       ORDER BY timestamp ASC
     `);
 
@@ -64,16 +75,16 @@ app.get('/api/latency', async (req, res) => {
   }
 });
 
-app.get('/api/latency/timeseries', async (req, res) => {
+readApp.get('/api/latency/timeseries', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
-        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) as timestamp,
+        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) -8*60*60 as timestamp,
         broker,
         latency_ms
       FROM order_latency
-      WHERE timestamp >= NOW() - INTERVAL '1 hour'
-        AND timestamp <= NOW()
+      WHERE timestamp >= NOW() + INTERVAL '8 hours' - INTERVAL '1 hours' 
+        AND timestamp <= NOW() + INTERVAL '8 hours' 
       ORDER BY timestamp ASC
     `);
 
@@ -88,7 +99,8 @@ app.get('/api/latency/timeseries', async (req, res) => {
   }
 });
 
-app.post('/api/latency', async (req, res) => {
+// WRITE APP ROUTES (POST requests)
+writeApp.post('/api/latency', async (req, res) => {
   try {
     const { broker, latency_ms, timestamp, symbol, side, price, volume } = req.body;
 
@@ -163,6 +175,16 @@ app.post('/api/latency', async (req, res) => {
   }
 });
 
-app.listen(port, '0.0.0.0', () => {
-  console.log(`Server running at http://0.0.0.0:${port}`);
+// Start read server
+readApp.listen(readPort, '0.0.0.0', () => {
+  console.log(`📖 Read Server (GET requests) running at http://0.0.0.0:${readPort}`);
 });
+
+// Start write server
+writeApp.listen(writePort, '0.0.0.0', () => {
+  console.log(`✏️  Write Server (POST requests) running at http://0.0.0.0:${writePort}`);
+});
+
+console.log('✅ Read-Write separated architecture initialized');
+console.log(`📖 Dashboard: http://localhost:${readPort}`);
+console.log(`✏️  API Write: http://localhost:${writePort}/api/latency`);

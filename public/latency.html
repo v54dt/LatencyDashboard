@@ -187,11 +187,74 @@
         ];
 
         function formatTime(timestamp) {
-            return new Date(timestamp * 1000).toLocaleTimeString();
+            const date = new Date((timestamp + 8 * 3600) * 1000);
+            const hours = String(date.getUTCHours()).padStart(2, '0');
+            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+            return `${hours}:${minutes}`;
         }
 
         function formatLatency(ms) {
             return `${ms.toFixed(1)}ms`;
+        }
+
+        function createEmptyChart() {
+            const chartContainer = document.getElementById('chart');
+
+            if (chart) {
+                chart.destroy();
+            }
+
+            // Create empty data for the last 1 hour
+            const now = Date.now() / 1000;
+            const start = now - 3600; // 1 hour ago
+            const timestamps = [];
+
+            // Create time points every 5 minutes
+            for (let t = start; t <= now; t += 300) { // 300 seconds = 5 minutes
+                timestamps.push(t);
+            }
+
+            const plotData = [timestamps, Array(timestamps.length).fill(null)];
+            const series = [
+                { label: 'Time' },
+                {
+                    label: '',
+                    stroke: '#e0e0e0',
+                    width: 0,
+                    scale: 'ms'
+                }
+            ];
+
+            const opts = {
+                title: "Latency Over Time (Latest 1 Hour)",
+                width: 1280,
+                height: 720,
+                series: series,
+                scales: {
+                    x: { auto: true },
+                    ms: { auto: true, range: [0, 100] }
+                },
+                axes: [
+                    {
+                        values: (self, ticks) => ticks.map(t => {
+                            const date = new Date(t * 1000);
+                            return date.toLocaleTimeString('en-US', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                hour12: false
+                            });
+                        }),
+                        rotate: 45
+                    },
+                    {
+                        scale: 'ms',
+                        values: (self, ticks) => ticks.map(t => `${t.toFixed(1)}ms`)
+                    }
+                ],
+                padding: [20, 40, 20, 60]
+            };
+
+            chart = new uPlot(opts, plotData, chartContainer);
         }
 
         async function fetchData() {
@@ -200,7 +263,10 @@
                 const rawData = await response.json();
 
                 if (rawData.length === 0) {
-                    document.getElementById('loading').innerHTML = 'No data available for the last hour';
+                    // Create empty chart with grid
+                    createEmptyChart();
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('chart').style.display = 'block';
                     return;
                 }
 
@@ -259,6 +325,11 @@
                 chart.destroy();
             }
 
+            const now = Date.now() / 1000;
+            const start = now - 3600; // 1 hour ago
+            console.log(now)
+            console.log(start)
+
             const opts = {
                 title: "Latency Over Time (Latest 1 Hour)",
                 width: 1280,
@@ -266,7 +337,8 @@
                 series: series,
                 scales: {
                     x: {
-                        auto: true
+                        auto: false,
+                        range: [start, now]
                     },
                     ms: {
                         auto: true
@@ -274,7 +346,9 @@
                 },
                 axes: [
                     {
-                        values: (self, ticks) => ticks.map(t => formatTime(t))
+                        values: (self, ticks) => ticks.map(t => formatTime(t)),
+                        rotate: 45,
+                        space: 80
                     },
                     {
                         scale: 'ms',
