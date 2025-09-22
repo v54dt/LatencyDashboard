@@ -52,13 +52,13 @@ readApp.get('/api/latency', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
-        EXTRACT(EPOCH FROM date_trunc('second', timestamp))-8*60*60 as timestamp,
+        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) as timestamp,
         broker,
         latency_ms
       FROM order_latency
       WHERE DATE(timestamp) = CURRENT_DATE
-        AND EXTRACT(hour FROM timestamp) >= 8
-        AND EXTRACT(hour FROM timestamp) <= 14
+        AND EXTRACT(hour FROM timestamp) >= 0
+        AND EXTRACT(hour FROM timestamp) <= 6
       ORDER BY timestamp ASC
     `);
 
@@ -79,12 +79,12 @@ readApp.get('/api/latency/timeseries', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
-        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) -8*60*60 as timestamp,
+        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) as timestamp,
         broker,
         latency_ms
       FROM order_latency
-      WHERE timestamp >= NOW() + INTERVAL '8 hours' - INTERVAL '1 hours' 
-        AND timestamp <= NOW() + INTERVAL '8 hours' 
+      WHERE timestamp >= NOW() - INTERVAL '1 hours' 
+        AND timestamp <= NOW()
       ORDER BY timestamp ASC
     `);
 

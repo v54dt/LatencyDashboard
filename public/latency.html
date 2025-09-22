@@ -337,8 +337,9 @@
                 series: series,
                 scales: {
                     x: {
-                        auto: false,
-                        range: [start, now]
+                        auto: true,
+                        min: start,
+                        max: now
                     },
                     ms: {
                         auto: true
