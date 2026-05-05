@@ -32,12 +32,12 @@
 
         .controls {
             background: white;
-            padding: 18px 20px;
+            padding: 20px;
             border-radius: 12px;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
             margin-bottom: 24px;
             display: flex;
-            gap: 20px;
+            gap: 24px;
             align-items: center;
             flex-wrap: wrap;
         }
@@ -91,28 +91,6 @@
             color: #7f8c8d;
         }
 
-        .refresh-btn {
-            background: #3498db;
-            color: white;
-            border: none;
-            padding: 6px 12px;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 12px;
-            line-height: 1;
-            margin: -2px 0;
-            transition: background 0.3s ease;
-        }
-
-        .refresh-btn:hover {
-            background: #2980b9;
-        }
-
-        .refresh-btn:disabled {
-            background: #bdc3c7;
-            cursor: not-allowed;
-        }
-
         .time-range {
             color: #7f8c8d;
             font-size: 0.9em;
@@ -120,10 +98,12 @@
 
         .legend {
             margin-top: 10px;
+            min-height: 32px; /* reserve pill row height even when empty */
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
             justify-content: center;
+            align-items: center;
         }
 
         .legend-item {
@@ -170,8 +150,6 @@
         </div>
 
         <div class="controls">
-            <button id="refreshBtn" class="refresh-btn">🔄 Refresh</button>
-            <span class="time-range" id="timeRange">Loading...</span>
             <div style="margin-left: auto;">
                 <span id="lastUpdate" class="time-range"></span>
             </div>
@@ -253,7 +231,7 @@
             ];
 
             const opts = {
-                title: "Latency Over Time (Latest 1 Hour)",
+                title: "Latency Time Series",
                 width: CHART_WIDTH,
                 height: CHART_HEIGHT,
                 legend: { show: false },
@@ -264,8 +242,7 @@
                 },
                 axes: [
                     {
-                        values: (self, ticks) => ticks.map(formatTime),
-                        rotate: 45
+                        values: (self, ticks) => ticks.map(formatTime)
                     },
                     {
                         scale: 'ms',
@@ -293,7 +270,8 @@
                     document.getElementById('chart').style.display = 'block';
                     document.getElementById('legend').innerHTML = '';
                     document.getElementById('legend').classList.remove('has-selection');
-                    document.getElementById('statsContainer').innerHTML = '';
+                    renderStats();
+                    updateLastUpdate();
                     return;
                 }
 
@@ -347,7 +325,7 @@
                 chartData = plotData;
                 createChart(chartData, series);
                 renderStats();
-                updateTimeRange(sortedTimestamps);
+                updateLastUpdate();
 
             } catch (error) {
                 console.error('Error fetching data:', error);
@@ -364,7 +342,7 @@
             const start = now - ONE_HOUR_SECONDS;
 
             const opts = {
-                title: "Latency Over Time (Latest 1 Hour)",
+                title: "Latency Time Series",
                 width: CHART_WIDTH,
                 height: CHART_HEIGHT,
                 legend: { show: false },
@@ -375,9 +353,7 @@
                 },
                 axes: [
                     {
-                        values: (self, ticks) => ticks.map(formatTime),
-                        rotate: 45,
-                        space: 80
+                        values: (self, ticks) => ticks.map(formatTime)
                     },
                     {
                         scale: 'ms',
@@ -441,6 +417,18 @@
                         <div class="stat-value">0</div>
                         <div class="stat-label">Total Samples</div>
                     </div>
+                    <div class="stat-item">
+                        <div class="stat-value">0.00ms</div>
+                        <div class="stat-label">Average Latency</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">0.00ms</div>
+                        <div class="stat-label">Max Latency</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">0.00ms</div>
+                        <div class="stat-label">99th Percentile</div>
+                    </div>
                 `;
                 return;
             }
@@ -450,16 +438,6 @@
             const max = arrayMax(latencies);
             const sortedAsc = latencies.slice().sort((a, b) => a - b);
             const p99 = percentile(sortedAsc, 0.99);
-
-            const lastStat = selectedBroker
-                ? `<div class="stat-item">
-                       <div class="stat-value" style="color: ${brokerColors[selectedBroker] || '#2b6cb0'}">${selectedBroker}</div>
-                       <div class="stat-label">Showing</div>
-                   </div>`
-                : `<div class="stat-item">
-                       <div class="stat-value">${latestBrokers.length}</div>
-                       <div class="stat-label">Active Brokers</div>
-                   </div>`;
 
             statsContainer.innerHTML = `
                 <div class="stat-item">
@@ -478,16 +456,10 @@
                     <div class="stat-value">${p99.toFixed(2)}ms</div>
                     <div class="stat-label">99th Percentile</div>
                 </div>
-                ${lastStat}
             `;
         }
 
-        function updateTimeRange(timestamps) {
-            if (timestamps.length > 0) {
-                const start = formatTime(timestamps[0]);
-                const end = formatTime(timestamps[timestamps.length - 1]);
-                document.getElementById('timeRange').textContent = `${start} - ${end} (UTC+8)`;
-            }
+        function updateLastUpdate() {
             document.getElementById('lastUpdate').textContent =
                 `Last updated: ${formatTime(Date.now() / 1000)} (UTC+8)`;
         }
@@ -502,18 +474,6 @@
                 refreshInterval = null;
             }
         }
-
-        // Event listeners
-        document.getElementById('refreshBtn').addEventListener('click', async () => {
-            const btn = document.getElementById('refreshBtn');
-            btn.disabled = true;
-            btn.innerHTML = '🔄 Refreshing...';
-
-            await fetchData();
-
-            btn.disabled = false;
-            btn.innerHTML = '🔄 Refresh';
-        });
 
         window.addEventListener('resize', () => {
             if (!chart) return;

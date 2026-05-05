@@ -64,6 +64,11 @@
             min-width: 40px;
         }
 
+        .time-range {
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }
+
         .chart-container {
             background: white;
             padding: 24px;
@@ -76,6 +81,42 @@
             display: flex;
             justify-content: center;
             align-items: center;
+        }
+
+        /* Broker filter pills below the chart — same look as the latency page
+           so the chart-container heights align. */
+        .broker-legend {
+            margin-top: 10px;
+            min-height: 32px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .broker-legend-item {
+            padding: 4px 12px;
+            font-size: 0.9em;
+            border: 1px solid transparent;
+            border-radius: 999px;
+            cursor: pointer;
+            user-select: none;
+            transition: opacity 0.15s, border-color 0.15s, background 0.15s;
+        }
+
+        .broker-legend-item:hover {
+            background: #edf2f7;
+        }
+
+        .broker-legend-item.active {
+            border-color: #2b6cb0;
+            background: #ebf4ff;
+            font-weight: 600;
+        }
+
+        .broker-legend.has-selection .broker-legend-item:not(.active) {
+            opacity: 0.4;
         }
 
         /* 調整Y軸標籤位置 */
@@ -131,7 +172,7 @@
             background: white;
             padding: 16px;
             border-radius: 8px;
-            margin-top: 16px;
+            margin-top: 24px;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
 
@@ -169,36 +210,36 @@
         </div>
 
         <div class="controls">
-            <div class="control-group">
-                <label for="brokerSelect">Broker:</label>
-                <select id="brokerSelect">
-                    <option value="all">All Brokers</option>
-                </select>
+            <div style="margin-left: auto;">
+                <span id="lastUpdate" class="time-range"></span>
             </div>
         </div>
 
         <div class="chart-container">
             <div id="heatmap"></div>
-            <div class="legend">
-                <div class="legend-title">Density Scale</div>
-                <div class="legend-gradient"></div>
-                <div class="legend-labels">
-                    <span>Low</span>
-                    <span>Medium</span>
-                    <span>High</span>
-                    <span>Very High</span>
-                </div>
-            </div>
+            <div class="broker-legend" id="brokerLegend"></div>
         </div>
 
         <div class="stats" id="stats">
             <!-- Stats will be populated by JavaScript -->
+        </div>
+
+        <div class="legend">
+            <div class="legend-title">Density Scale</div>
+            <div class="legend-gradient"></div>
+            <div class="legend-labels">
+                <span>Low</span>
+                <span>Medium</span>
+                <span>High</span>
+                <span>Very High</span>
+            </div>
         </div>
     </div>
 
     <script>
         let chart = null;
         let currentData = [];
+        let selectedBroker = null; // null = all brokers
 
         async function fetchData() {
             try {
@@ -375,7 +416,6 @@
                 },
                 axes: [
                     {
-                        label: "Time (UTC+8)",
                         values: (u, vals) => vals.map(formatTaipeiTime)
                     },
                     {
@@ -391,8 +431,6 @@
         }
 
         function createHeatmap(data) {
-            const selectedBroker = document.getElementById('brokerSelect').value;
-
             // Trading window: today's 08:00–14:00 in Asia/Taipei.
             const startTime = taipeiTodayAtHourEpoch(8);
             const endTime = taipeiTodayAtHourEpoch(14);
@@ -403,7 +441,7 @@
                 d.latency_ms > 0
             );
 
-            if (selectedBroker !== 'all') {
+            if (selectedBroker !== null) {
                 filteredData = filteredData.filter(d => d.broker === selectedBroker);
             }
 
@@ -490,7 +528,6 @@
                 },
                 axes: [
                     {
-                        label: "Time (UTC+8)",
                         values: (u, vals) => vals.map(formatTaipeiTime)
                     },
                     {
@@ -532,52 +569,57 @@
             createHeatmap(currentData);
         }
 
-        function populateBrokerList(data) {
+        function renderBrokerLegend(data) {
             const brokers = [...new Set(data.map(d => d.broker).filter(Boolean))].sort();
-            const brokerSelect = document.getElementById('brokerSelect');
 
-            const existing = new Set(
-                Array.from(brokerSelect.options).map(o => o.value)
-            );
-            const desired = new Set(['all', ...brokers]);
-
-            // Skip rebuild when the broker set hasn't changed — keeps user's selection.
-            if (existing.size === desired.size && [...existing].every(v => desired.has(v))) {
-                return;
+            // Drop a stale selection if that broker no longer appears in the data.
+            if (selectedBroker !== null && !brokers.includes(selectedBroker)) {
+                selectedBroker = null;
             }
 
-            const previous = brokerSelect.value;
-            brokerSelect.innerHTML = '<option value="all">All Brokers</option>';
+            const legend = document.getElementById('brokerLegend');
+            legend.innerHTML = '';
+            legend.classList.toggle('has-selection', selectedBroker !== null);
+
             brokers.forEach(broker => {
-                const option = document.createElement('option');
-                option.value = broker;
-                option.textContent = broker;
-                brokerSelect.appendChild(option);
+                const item = document.createElement('div');
+                item.className = 'broker-legend-item' + (broker === selectedBroker ? ' active' : '');
+                item.title = 'Click to filter heatmap to this broker';
+                item.textContent = broker;
+                item.addEventListener('click', () => {
+                    selectedBroker = (selectedBroker === broker) ? null : broker;
+                    renderBrokerLegend(currentData);
+                    updateChart();
+                });
+                legend.appendChild(item);
             });
-            if (desired.has(previous)) {
-                brokerSelect.value = previous;
-            }
         }
 
-        document.getElementById('brokerSelect').addEventListener('change', updateChart);
+        function updateLastUpdate() {
+            document.getElementById('lastUpdate').textContent =
+                `Last updated: ${formatTaipeiTime(Date.now() / 1000)} (UTC+8)`;
+        }
 
         fetchData().then(data => {
             currentData = data;
-            populateBrokerList(data);
+            renderBrokerLegend(data);
             updateChart();
+            updateLastUpdate();
         }).catch(error => {
             console.error('Failed to load data:', error);
             currentData = generateMockData();
-            populateBrokerList(currentData);
+            renderBrokerLegend(currentData);
             updateChart();
+            updateLastUpdate();
         });
 
         setInterval(async () => {
             try {
                 const newData = await fetchData();
                 currentData = newData;
-                populateBrokerList(newData);
+                renderBrokerLegend(newData);
                 updateChart();
+                updateLastUpdate();
             } catch (error) {
                 console.warn('Failed to refresh data:', error);
             }
