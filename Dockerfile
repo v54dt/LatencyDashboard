@@ -1,7 +1,14 @@
 FROM node:18-alpine
+
 WORKDIR /app
+
 COPY package*.json ./
-RUN npm install
-COPY . .
-EXPOSE 3000
-CMD ["npm", "start"]
+RUN npm ci --omit=dev
+
+COPY --chown=node:node . .
+
+USER node
+
+EXPOSE 3000 3001
+
+CMD ["node", "server.js"]

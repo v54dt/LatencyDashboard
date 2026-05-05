@@ -1,46 +1,52 @@
 #!/bin/bash
 
-# Script to check database status and show basic statistics
+# Print database connectivity status and basic table statistics.
 # Usage: ./db_status.sh
 
-set -e
+set -euo pipefail
 
-# Load environment variables
-if [ -f "../../.env" ]; then
-    export $(cat ../../.env | grep -v '#' | xargs)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../../.env"
+
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
 fi
 
-# Default values
-DB_HOST=${DB_HOST:-localhost}
-DB_PORT=${DB_PORT:-5432}
-POSTGRES_DB=${POSTGRES_DB:-latency_db}
-POSTGRES_USER=${POSTGRES_USER:-admin}
+DB_HOST="${DB_HOST:-localhost}"
+DB_PORT="${DB_PORT:-5432}"
+POSTGRES_DB="${POSTGRES_DB:-latency_db}"
+POSTGRES_USER="${POSTGRES_USER:-admin}"
 
 echo "=== Database Status ==="
 echo "Database: $POSTGRES_DB on $DB_HOST:$DB_PORT"
 echo "User: $POSTGRES_USER"
 echo
 
-# Check if database is accessible
-if ! PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d $POSTGRES_DB -c "SELECT 1;" > /dev/null 2>&1; then
-    echo "❌ Cannot connect to database!"
+if ! PGPASSWORD="$POSTGRES_PASSWORD" psql \
+        -h "$DB_HOST" -p "$DB_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+        -c "SELECT 1;" > /dev/null 2>&1; then
+    echo "Cannot connect to database!"
     exit 1
 fi
 
-echo "✅ Database connection successful"
+echo "Database connection successful"
 echo
 
-# Get basic statistics
 echo "=== Table Statistics ==="
-PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d $POSTGRES_DB -c "
+PGPASSWORD="$POSTGRES_PASSWORD" psql \
+    -h "$DB_HOST" -p "$DB_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -c "
 SELECT
-    'Total Records' as metric,
-    COUNT(*) as value
+    'Total Records' AS metric,
+    COUNT(*)::text AS value
 FROM order_latency
 UNION ALL
 SELECT
     'Unique Brokers',
-    COUNT(DISTINCT broker)
+    COUNT(DISTINCT broker)::text
 FROM order_latency
 UNION ALL
 SELECT
@@ -55,12 +61,10 @@ FROM order_latency;
 
 echo
 echo "=== Recent Data Sample ==="
-PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d $POSTGRES_DB -c "
-SELECT
-    timestamp,
-    broker,
-    latency_ms,
-    symbol
+PGPASSWORD="$POSTGRES_PASSWORD" psql \
+    -h "$DB_HOST" -p "$DB_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -c "
+SELECT timestamp, broker, latency_ms, symbol
 FROM order_latency
 ORDER BY timestamp DESC
 LIMIT 5;

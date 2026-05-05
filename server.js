@@ -4,11 +4,9 @@ const { Pool } = require('pg');
 const cors = require('cors');
 const path = require('path');
 
-// Create separate apps for read and write operations
 const readApp = express();
 const writeApp = express();
 
-// Port configuration
 const readPort = process.env.APP_PORT || 3000;
 const writePort = process.env.WRITE_PORT || 3001;
 
@@ -20,16 +18,29 @@ const pool = new Pool({
   port: process.env.DB_PORT || 5432,
 });
 
-// Configure read app (GET requests)
+// Without this, an idle-client error tears down the whole Node process.
+pool.on('error', (err) => {
+  console.error('Unexpected pg pool error:', err);
+});
+
+// Force every checked-out connection into UTC+8 so EXTRACT/CURRENT_DATE/NOW()
+// behave identically to the values shown in the dashboard.
+pool.on('connect', (client) => {
+  client.query("SET TIME ZONE 'Asia/Taipei'").catch((err) => {
+    console.error('Failed to set session timezone:', err);
+  });
+});
+
+const JSON_LIMIT = '32kb';
+
 readApp.use(cors());
-readApp.use(express.json());
+readApp.use(express.json({ limit: JSON_LIMIT }));
 readApp.use(express.static('public'));
 
-// Configure write app (POST requests)
 writeApp.use(cors());
-writeApp.use(express.json());
+writeApp.use(express.json({ limit: JSON_LIMIT }));
 
-// READ APP ROUTES (GET requests)
+// READ APP ROUTES
 readApp.get('/', (req, res) => {
   res.send(`
     <h1>Latency Dashboard</h1>
@@ -48,27 +59,28 @@ readApp.get('/latency', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'latency.html'));
 });
 
+// Heatmap: today's 08:00–14:00 trading window in Asia/Taipei.
+// With session TZ set to Asia/Taipei, CURRENT_DATE is local and we can
+// build the window directly without DATE()/EXTRACT() tricks that defeat
+// the timestamp index.
 readApp.get('/api/latency', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
-        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) as timestamp,
+        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) AS timestamp,
         broker,
         latency_ms
       FROM order_latency
-      WHERE DATE(timestamp) = CURRENT_DATE
-        AND EXTRACT(hour FROM timestamp) >= 0
-        AND EXTRACT(hour FROM timestamp) <= 6
+      WHERE timestamp >= CURRENT_DATE + TIME '08:00'
+        AND timestamp <  CURRENT_DATE + TIME '14:00'
       ORDER BY timestamp ASC
     `);
 
-    const processedRows = result.rows.map(row => ({
+    res.json(result.rows.map(row => ({
       timestamp: parseFloat(row.timestamp),
       broker: row.broker,
-      latency_ms: parseFloat(row.latency_ms)
-    }));
-
-    res.json(processedRows);
+      latency_ms: parseFloat(row.latency_ms),
+    })));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
@@ -79,19 +91,18 @@ readApp.get('/api/latency/timeseries', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
-        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) as timestamp,
+        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) AS timestamp,
         broker,
         latency_ms
       FROM order_latency
-      WHERE timestamp >= NOW() - INTERVAL '1 hours' 
-        AND timestamp <= NOW()
+      WHERE timestamp >= NOW() - INTERVAL '1 hour'
       ORDER BY timestamp ASC
     `);
 
     res.json(result.rows.map(row => ({
       timestamp: parseFloat(row.timestamp),
       broker: row.broker,
-      latency_ms: parseFloat(row.latency_ms)
+      latency_ms: parseFloat(row.latency_ms),
     })));
   } catch (err) {
     console.error(err);
@@ -99,7 +110,7 @@ readApp.get('/api/latency/timeseries', async (req, res) => {
   }
 });
 
-// WRITE APP ROUTES (POST requests)
+// WRITE APP ROUTES
 writeApp.post('/api/latency', async (req, res) => {
   try {
     const { broker, latency_ms, timestamp, symbol, side, price, volume } = req.body;
@@ -138,9 +149,9 @@ writeApp.post('/api/latency', async (req, res) => {
     }
 
     if (side !== undefined && side !== null) {
-      if (typeof side !== 'string' || side.length !== 1) {
+      if (side !== 'B' && side !== 'S') {
         return res.status(400).json({
-          error: 'side must be a single character (B/S)'
+          error: "side must be 'B' or 'S'"
         });
       }
     }
@@ -161,30 +172,44 @@ writeApp.post('/api/latency', async (req, res) => {
       }
     }
 
-    const result = await pool.query(
-      'INSERT INTO order_latency (timestamp, broker, latency_ms, symbol, side, price, volume) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+    await pool.query(
+      'INSERT INTO order_latency (timestamp, broker, latency_ms, symbol, side, price, volume) VALUES ($1, $2, $3, $4, $5, $6, $7)',
       [timestampToUse, broker, latency_ms, symbol, side, price, volume]
     );
 
-    res.status(201).json({
-      message: 'Data inserted successfully'
-    });
+    res.status(201).json({ message: 'Data inserted successfully' });
   } catch (err) {
     console.error('Error inserting data:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });
 
-// Start read server
-readApp.listen(readPort, '0.0.0.0', () => {
-  console.log(`📖 Read Server (GET requests) running at http://0.0.0.0:${readPort}`);
+const readServer = readApp.listen(readPort, '0.0.0.0', () => {
+  console.log(`Read server (GET) listening on http://0.0.0.0:${readPort}`);
 });
 
-// Start write server
-writeApp.listen(writePort, '0.0.0.0', () => {
-  console.log(`✏️  Write Server (POST requests) running at http://0.0.0.0:${writePort}`);
+const writeServer = writeApp.listen(writePort, '0.0.0.0', () => {
+  console.log(`Write server (POST) listening on http://0.0.0.0:${writePort}`);
 });
 
-console.log('✅ Read-Write separated architecture initialized');
-console.log(`📖 Dashboard: http://localhost:${readPort}`);
-console.log(`✏️  API Write: http://localhost:${writePort}/api/latency`);
+console.log(`Dashboard:  http://localhost:${readPort}`);
+console.log(`Write API:  http://localhost:${writePort}/api/latency`);
+
+function shutdown(signal) {
+  console.log(`Received ${signal}, draining connections...`);
+  let pending = 2;
+  const done = () => {
+    if (--pending === 0) {
+      pool.end().then(() => process.exit(0)).catch(() => process.exit(1));
+    }
+  };
+  readServer.close(done);
+  writeServer.close(done);
+  setTimeout(() => {
+    console.error('Shutdown timed out, forcing exit');
+    process.exit(1);
+  }, 10000).unref();
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

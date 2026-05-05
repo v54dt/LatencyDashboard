@@ -169,66 +169,66 @@
 
     <script>
         let chart = null;
-        let data = null;
+        let chartData = null;
         let refreshInterval = null;
 
-        // Color palette for different brokers
+        const CHART_WIDTH = 1280;
+        const CHART_HEIGHT = 720;
+        const REFRESH_INTERVAL_MS = 30000;
+        const ONE_HOUR_SECONDS = 3600;
+        const FIVE_MIN_SECONDS = 300;
+
         const colors = [
-            '#e74c3c', // Red
-            '#3498db', // Blue
-            '#2ecc71', // Green
-            '#f39c12', // Orange
-            '#9b59b6', // Purple
-            '#1abc9c', // Turquoise
-            '#34495e', // Dark Gray
-            '#e67e22', // Carrot
-            '#fd79a8', // Pink
-            '#00b894'  // Mint
+            '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
+            '#1abc9c', '#34495e', '#e67e22', '#fd79a8', '#00b894'
         ];
 
-        function formatTime(timestamp) {
-            const date = new Date((timestamp + 8 * 3600) * 1000);
-            const hours = String(date.getUTCHours()).padStart(2, '0');
-            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-            return `${hours}:${minutes}`;
+        const taipeiTimeFormatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'Asia/Taipei',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        });
+
+        function formatTime(epochSeconds) {
+            return taipeiTimeFormatter.format(new Date(epochSeconds * 1000));
         }
 
-        function formatLatency(ms) {
-            return `${ms.toFixed(1)}ms`;
+        function arrayMax(arr) {
+            let m = -Infinity;
+            for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
+            return m;
+        }
+
+        function percentile(sortedAsc, p) {
+            if (sortedAsc.length === 0) return 0;
+            const idx = Math.min(sortedAsc.length - 1, Math.ceil(sortedAsc.length * p) - 1);
+            return sortedAsc[Math.max(0, idx)];
         }
 
         function createEmptyChart() {
             const chartContainer = document.getElementById('chart');
 
-            if (chart) {
-                chart.destroy();
-            }
+            if (chart) chart.destroy();
 
-            // Create empty data for the last 1 hour
             const now = Date.now() / 1000;
-            const start = now - 3600; // 1 hour ago
+            const start = now - ONE_HOUR_SECONDS;
             const timestamps = [];
 
-            // Create time points every 5 minutes
-            for (let t = start; t <= now; t += 300) { // 300 seconds = 5 minutes
+            for (let t = start; t <= now; t += FIVE_MIN_SECONDS) {
                 timestamps.push(t);
             }
 
             const plotData = [timestamps, Array(timestamps.length).fill(null)];
             const series = [
                 { label: 'Time' },
-                {
-                    label: '',
-                    stroke: '#e0e0e0',
-                    width: 0,
-                    scale: 'ms'
-                }
+                { label: '', stroke: '#e0e0e0', width: 0, scale: 'ms' }
             ];
 
             const opts = {
                 title: "Latency Over Time (Latest 1 Hour)",
-                width: 1280,
-                height: 720,
+                width: CHART_WIDTH,
+                height: CHART_HEIGHT,
                 series: series,
                 scales: {
                     x: { auto: true },
@@ -236,14 +236,7 @@
                 },
                 axes: [
                     {
-                        values: (self, ticks) => ticks.map(t => {
-                            const date = new Date(t * 1000);
-                            return date.toLocaleTimeString('en-US', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                                hour12: false
-                            });
-                        }),
+                        values: (self, ticks) => ticks.map(formatTime),
                         rotate: 45
                     },
                     {
@@ -307,8 +300,8 @@
                     });
                 });
 
-                data = plotData;
-                createChart(data, series);
+                chartData = plotData;
+                createChart(chartData, series);
                 updateStats(rawData, brokers);
                 updateTimeRange(sortedTimestamps);
 
@@ -321,33 +314,23 @@
         function createChart(data, series) {
             const chartContainer = document.getElementById('chart');
 
-            if (chart) {
-                chart.destroy();
-            }
+            if (chart) chart.destroy();
 
             const now = Date.now() / 1000;
-            const start = now - 3600; // 1 hour ago
-            console.log(now)
-            console.log(start)
+            const start = now - ONE_HOUR_SECONDS;
 
             const opts = {
                 title: "Latency Over Time (Latest 1 Hour)",
-                width: 1280,
-                height: 720,
+                width: CHART_WIDTH,
+                height: CHART_HEIGHT,
                 series: series,
                 scales: {
-                    x: {
-                        auto: true,
-                        min: start,
-                        max: now
-                    },
-                    ms: {
-                        auto: true
-                    }
+                    x: { auto: true, min: start, max: now },
+                    ms: { auto: true }
                 },
                 axes: [
                     {
-                        values: (self, ticks) => ticks.map(t => formatTime(t)),
+                        values: (self, ticks) => ticks.map(formatTime),
                         rotate: 45,
                         space: 80
                     },
@@ -364,8 +347,7 @@
             document.getElementById('loading').style.display = 'none';
             chartContainer.style.display = 'block';
 
-            // Update legend
-            updateLegend(series.slice(1)); // Skip time series
+            updateLegend(series.slice(1));
         }
 
         function updateLegend(series) {
@@ -387,13 +369,12 @@
             const statsContainer = document.getElementById('statsContainer');
             statsContainer.innerHTML = '';
 
-            // Calculate overall stats
             const allLatencies = rawData.map(row => row.latency_ms);
             const avgLatency = allLatencies.reduce((a, b) => a + b, 0) / allLatencies.length;
-            const maxLatency = Math.max(...allLatencies);
-            const p99Latency = allLatencies.sort((a, b) => a - b)[Math.floor(allLatencies.length * 0.99)];
+            const maxLatency = arrayMax(allLatencies);
+            const sortedAsc = allLatencies.slice().sort((a, b) => a - b);
+            const p99Latency = percentile(sortedAsc, 0.99);
 
-            // Overall stats
             statsContainer.innerHTML = `
                 <div class="stat-item">
                     <div class="stat-value">${allLatencies.length.toLocaleString()}</div>
@@ -420,18 +401,16 @@
 
         function updateTimeRange(timestamps) {
             if (timestamps.length > 0) {
-                const start = new Date(timestamps[0] * 1000);
-                const end = new Date(timestamps[timestamps.length - 1] * 1000);
-                document.getElementById('timeRange').innerHTML =
-                    `${start.toLocaleTimeString()} - ${end.toLocaleTimeString()}`;
+                const start = formatTime(timestamps[0]);
+                const end = formatTime(timestamps[timestamps.length - 1]);
+                document.getElementById('timeRange').textContent = `${start} - ${end} (UTC+8)`;
             }
-
-            document.getElementById('lastUpdate').innerHTML =
-                `Last updated: ${new Date().toLocaleTimeString()}`;
+            document.getElementById('lastUpdate').textContent =
+                `Last updated: ${formatTime(Date.now() / 1000)} (UTC+8)`;
         }
 
         function startAutoRefresh() {
-            refreshInterval = setInterval(fetchData, 30000); // Refresh every 30 seconds
+            refreshInterval = setInterval(fetchData, REFRESH_INTERVAL_MS);
         }
 
         function stopAutoRefresh() {
@@ -453,14 +432,11 @@
             btn.innerHTML = '🔄 Refresh';
         });
 
-        // Handle window resize
         window.addEventListener('resize', () => {
-            if (chart && data) {
-                chart.setSize({
-                    width: 1280,
-                    height: 720
-                });
-            }
+            if (!chart) return;
+            const container = document.getElementById('chart');
+            const width = Math.min(CHART_WIDTH, container.clientWidth || CHART_WIDTH);
+            chart.setSize({ width, height: CHART_HEIGHT });
         });
 
         // Initialize

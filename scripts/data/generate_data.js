@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 // Generate fake data and insert directly to database
-require('dotenv').config({ path: '../../.env' });
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 const { Pool } = require('pg');
 
 const brokers = ['BrokerA', 'BrokerB', 'BrokerC'];

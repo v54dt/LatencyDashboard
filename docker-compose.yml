@@ -2,18 +2,28 @@ services:
   postgres:
     image: postgres:15
     network_mode: host
+    command: ["postgres", "-c", "timezone=Asia/Taipei"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: Asia/Taipei
+      PGTZ: Asia/Taipei
     volumes:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   app:
     build: .
     network_mode: host
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
       - DB_HOST=${DB_HOST}
       - DB_PORT=${DB_PORT}
@@ -21,3 +31,8 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - APP_PORT=${APP_PORT}
+      - WRITE_PORT=${WRITE_PORT}
+      - TZ=Asia/Taipei
+
+volumes:
+  postgres_data:

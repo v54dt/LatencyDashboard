@@ -2,16 +2,17 @@
 
 A modern web application for visualizing order execution latency across different brokers using advanced heatmap visualization. Built with Node.js, PostgreSQL, and uPlot.
 
-![Dashboard Preview](docs/dashboard-preview.png)
+![Dashboard Preview](Demo.png)
 
 ## 🚀 Features
 
 - **📈 Interactive Heatmap**: Real-time latency visualization using uPlot aggregated heatmap
+- **📉 Time-Series View**: Per-broker latency lines for the most recent hour
 - **🏢 Broker Analysis**: Compare latency performance across multiple brokers
 - **⏰ Time-based Filtering**: Focus on trading hours (08:00-14:00 UTC+8)
 - **📊 Statistical Insights**: Average, maximum, and 99th percentile latency metrics
-- **🎨 Professional UI**: Modern, responsive dashboard design
-- **🔄 Auto-refresh**: Real-time data updates every 30 seconds
+- **✏️ HTTP Write API**: POST `/api/latency` on the dedicated write port for ingestion
+- **🔄 Auto-refresh**: Data updates every 30 seconds
 
 ## 🛠️ Tech Stack
 
@@ -32,11 +33,11 @@ LatencyDashboard/
 ├── 🗄️ Database
 │   └── init.sql                # PostgreSQL schema & indexes
 ├── 🖥️ Application
-│   ├── server.js               # Express API server
+│   ├── server.js               # Express read + write servers
 │   ├── package.json            # Node.js dependencies
 │   └── public/                 # Static web assets
-│       ├── index.html          # Main dashboard
-│       └── heatmap.html        # Latency heatmap page
+│       ├── heatmap.html        # Latency heatmap page
+│       └── latency.html        # Latency time-series page
 ├── 🔧 Scripts
 │   ├── data/                   # Data generation tools
 │   └── utils/                  # Database utilities
@@ -57,9 +58,16 @@ LatencyDashboard/
 git clone <repository-url>
 cd LatencyDashboard
 
-# Copy environment template and configure
-cp .env.example .env
-# Edit .env with your preferred settings
+# Create your local .env (see "Environment Variables" below for the full list).
+cat > .env <<'EOF'
+POSTGRES_DB=latency_db
+POSTGRES_USER=admin
+POSTGRES_PASSWORD=change_me
+DB_HOST=localhost
+DB_PORT=5432
+APP_PORT=3000
+WRITE_PORT=3001
+EOF
 ```
 
 ### 2. Start Services
@@ -88,28 +96,50 @@ cd ../utils/
 
 - **Main Dashboard**: http://localhost:3000
 - **Latency Heatmap**: http://localhost:3000/latency-heatmap
-- **API Endpoint**: http://localhost:3000/api/latency
+- **Time Series**:    http://localhost:3000/latency
+- **Read API**:       http://localhost:3000/api/latency
+- **Write API**:      http://localhost:3001/api/latency
 
 ## 📊 API Reference
 
+The application runs two HTTP servers:
+
+| Server | Default Port | Purpose                |
+| ------ | ------------ | ---------------------- |
+| Read   | `APP_PORT`   | Dashboard pages + GETs |
+| Write  | `WRITE_PORT` | Ingestion (POST)       |
+
 ### GET `/api/latency`
 
-Returns latency data for visualization.
+Today's 08:00–14:00 (Asia/Taipei) trading window, used by the heatmap.
 
-**Response:**
 ```json
 [
-  {
-    "timestamp": 1726250400,
-    "broker": "BrokerA",
-    "latency_ms": 25.334,
-    "symbol": "AAPL",
-    "side": "B",
-    "price": 145.67,
-    "volume": 1000
-  }
+  { "timestamp": 1726250400, "broker": "BrokerA", "latency_ms": 25.334 }
 ]
 ```
+
+### GET `/api/latency/timeseries`
+
+Last 1 hour, used by the time-series page.
+
+### POST `/api/latency`
+
+Insert a single latency record. Request body:
+
+```json
+{
+  "broker":     "BrokerA",        // required, ≤50 chars
+  "latency_ms": 25.334,           // required, finite ≥ 0
+  "timestamp":  "2026-05-05T08:00:00+08:00",  // optional, defaults to now
+  "symbol":     "AAPL",           // optional, ≤20 chars
+  "side":       "B",              // optional, "B" or "S"
+  "price":      145.67,           // optional, finite ≥ 0
+  "volume":     1000              // optional, integer ≥ 0
+}
+```
+
+Returns `201` on success, `400` on validation errors, `500` on DB errors.
 
 ## 🔧 Configuration
 
@@ -127,25 +157,34 @@ DB_PORT=5432
 
 # Application Configuration
 APP_PORT=3000
+WRITE_PORT=3001
 ```
 
 ### Database Schema
 
 ```sql
 CREATE TABLE order_latency (
-    timestamp TIMESTAMP,
-    broker VARCHAR(50) NOT NULL,
-    latency_ms FLOAT NOT NULL,
-    symbol VARCHAR(20),
-    side VARCHAR(1),
-    price FLOAT,
-    volume INTEGER
+    id          BIGSERIAL PRIMARY KEY,
+    timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    broker      VARCHAR(50) NOT NULL,
+    latency_ms  DOUBLE PRECISION NOT NULL,
+    symbol      VARCHAR(20),
+    side        CHAR(1) CHECK (side IN ('B', 'S')),
+    price       DOUBLE PRECISION,
+    volume      INTEGER
 );
 
--- Performance indexes
 CREATE INDEX idx_order_latency_timestamp ON order_latency(timestamp);
-CREATE INDEX idx_order_latency_broker ON order_latency(broker);
+CREATE INDEX idx_order_latency_broker    ON order_latency(broker);
+CREATE INDEX idx_order_latency_symbol    ON order_latency(symbol);
 ```
+
+### Timezone
+
+The database, the server connection pool, and the dashboard pages all operate in
+**`Asia/Taipei` (UTC+8)**. `init.sql` sets the database default timezone, and
+`server.js` issues `SET TIME ZONE 'Asia/Taipei'` on every checked-out connection,
+so `CURRENT_DATE`, `NOW()`, and `EXTRACT(...)` are consistent across every layer.
 
 ## 🎯 Usage Examples
 

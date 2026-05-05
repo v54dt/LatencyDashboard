@@ -144,7 +144,11 @@
         .legend-gradient {
             height: 20px;
             border-radius: 4px;
-            background: linear-gradient(to right, #fff, #ffa500, #ff0000, #800080);
+            background: linear-gradient(to right,
+                hsl(180, 80%, 50%),
+                hsl(240, 80%, 50%),
+                hsl(300, 80%, 50%),
+                hsl(360, 80%, 50%));
             margin-bottom: 8px;
         }
 
@@ -196,26 +200,13 @@
         let chart = null;
         let currentData = [];
 
-        // Metal gradient color palette (16 colors)
-        const COLORS = [
-            "#ffffff", "#fff2e6", "#ffe6cc", "#ffd9b3",
-            "#ffcc99", "#ffbf80", "#ffb366", "#ffa64d",
-            "#ff9933", "#ff8c1a", "#ff8000", "#e67300",
-            "#cc6600", "#b35900", "#994d00", "#800040"
-        ];
-
         async function fetchData() {
             try {
                 const response = await fetch('/api/latency');
-                const data = await response.json();
-                console.log('Fetched data:', data.length, 'items');
-                if (data.length > 0) {
-                    console.log('First item:', data[0]);
-                    console.log('Last item:', data[data.length - 1]);
-                }
-                return data;
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return await response.json();
             } catch (error) {
-                console.warn('API not available, using mock data');
+                console.warn('API not available, using mock data:', error.message);
                 return generateMockData();
             }
         }
@@ -304,23 +295,66 @@
             };
         }
 
+        const TIME_BUCKET_SECONDS = 300; // 5 minutes
+        const CHART_WIDTH = 1280;
+        const CHART_HEIGHT = 720;
+        const REFRESH_INTERVAL_MS = 30000;
+
+        // Asia/Taipei is fixed UTC+8 with no DST, so a constant offset is safe.
+        function taipeiTodayAtHourEpoch(hour) {
+            const now = new Date();
+            const parts = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Taipei',
+                year: 'numeric', month: '2-digit', day: '2-digit'
+            }).formatToParts(now).reduce((acc, p) => {
+                if (p.type !== 'literal') acc[p.type] = p.value;
+                return acc;
+            }, {});
+            const utcMs = Date.UTC(+parts.year, +parts.month - 1, +parts.day, hour, 0, 0);
+            return Math.floor((utcMs - 8 * 3600 * 1000) / 1000);
+        }
+
+        function formatTaipeiTime(epochSeconds) {
+            return new Intl.DateTimeFormat('en-US', {
+                timeZone: 'Asia/Taipei',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            }).format(new Date(epochSeconds * 1000));
+        }
+
+        function arrayMin(arr) {
+            let m = Infinity;
+            for (let i = 0; i < arr.length; i++) if (arr[i] < m) m = arr[i];
+            return m;
+        }
+
+        function arrayMax(arr) {
+            let m = -Infinity;
+            for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
+            return m;
+        }
+
+        function percentile(sortedAsc, p) {
+            if (sortedAsc.length === 0) return 0;
+            const idx = Math.min(sortedAsc.length - 1, Math.ceil(sortedAsc.length * p) - 1);
+            return sortedAsc[Math.max(0, idx)];
+        }
+
         function createEmptyChart(startTime, endTime) {
-            const timeInterval = 300; // 5 minutes
-            const timeSlots = Math.ceil((endTime - startTime) / timeInterval);
+            const timeSlots = Math.ceil((endTime - startTime) / TIME_BUCKET_SECONDS);
             const timestamps = [];
 
             for (let i = 0; i < timeSlots; i++) {
-                const timestamp = startTime + (i * timeInterval);
-                timestamps.push(timestamp);
+                timestamps.push(startTime + (i * TIME_BUCKET_SECONDS));
             }
 
-            // Create empty data structure
             const plotData = [
-                timestamps,                    // x timestamps
-                timestamps.map(() => 0),      // min y values (dummy)
-                timestamps.map(() => 100),    // max y values (dummy)
-                [],                          // empty bins
-                []                           // empty counts
+                timestamps,
+                timestamps.map(() => 0),
+                timestamps.map(() => 100),
+                [],
+                []
             ];
 
             const series = [
@@ -333,56 +367,36 @@
 
             const opts = {
                 title: "Latency Heatmap",
-                width: 1280,
-                height: 720,
+                width: CHART_WIDTH,
+                height: CHART_HEIGHT,
                 series: series,
                 scales: {
-                    y: {
-                        auto: false,
-                        range: [0, 100] // Default range when no data
-                    }
+                    y: { auto: false, range: [0, 100] }
                 },
                 axes: [
                     {
                         label: "Time (UTC+8)",
-                        values: (u, vals) => vals.map(v => {
-                            const date = new Date(v * 1000);
-                            return date.toLocaleTimeString('en-US', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                                hour12: false
-                            });
-                        })
+                        values: (u, vals) => vals.map(formatTaipeiTime)
                     },
                     {
-                        // label: "Latency (ms)",
                         side: 3,
                         values: (u, vals) => vals.map(v => v.toFixed(1) + "ms")
                     }
                 ],
                 padding: [20, 40, 20, 60]
-                // No plugins needed for empty chart
             };
 
-            if (chart) {
-                chart.destroy();
-            }
-
+            if (chart) chart.destroy();
             chart = new uPlot(opts, plotData, document.getElementById('heatmap'));
         }
 
         function createHeatmap(data) {
-            console.log('createHeatmap called with data length:', data.length);
             const selectedBroker = document.getElementById('brokerSelect').value;
-            console.log('Selected broker:', selectedBroker);
 
-            // Fixed time range: 8:00-14:00 (6 hours)
-            const now = new Date();
-            now.setHours(8, 0, 0, 0); // Start at 8:00 AM
-            const startTime = Math.floor(now.getTime() / 1000);
-            const endTime = startTime + (6 * 60 * 60); // Fixed 6 hours (08:00-14:00)
+            // Trading window: today's 08:00–14:00 in Asia/Taipei.
+            const startTime = taipeiTodayAtHourEpoch(8);
+            const endTime = taipeiTodayAtHourEpoch(14);
 
-            // Filter data for time range and broker
             let filteredData = data.filter(d =>
                 d.timestamp >= startTime &&
                 d.timestamp <= endTime &&
@@ -399,44 +413,35 @@
                 return;
             }
 
-            // Calculate statistics
             const latencies = filteredData.map(d => d.latency_ms).sort((a, b) => a - b);
-            const stats = {
+            updateStats({
                 total: latencies.length,
                 avg: latencies.reduce((a, b) => a + b, 0) / latencies.length,
                 max: latencies[latencies.length - 1],
-                p99: latencies[Math.floor(latencies.length * 0.99)]
-            };
-            updateStats(stats);
+                p99: percentile(latencies, 0.99),
+            });
 
-            // Auto-calculate optimal bucket parameters
-            const minLatency = Math.min(...latencies);
-            const maxLatency = Math.max(...latencies);
+            const minLatency = latencies[0];
+            const maxLatency = latencies[latencies.length - 1];
             const range = maxLatency - minLatency;
-
-            // Optimal bucket size: aim for ~20 buckets for good resolution
             const bucketSize = Math.max(0.1, range / 20);
-            const timeInterval = 300; // 5 minutes
 
-            // Group data by timestamps (like official implementation)
-            const timeSlots = Math.ceil((endTime - startTime) / timeInterval);
+            const timeSlots = Math.ceil((endTime - startTime) / TIME_BUCKET_SECONDS);
             const timestampGroups = Array(timeSlots).fill(null).map(() => []);
 
             filteredData.forEach(d => {
-                const timeSlot = Math.floor((d.timestamp - startTime) / timeInterval);
+                const timeSlot = Math.floor((d.timestamp - startTime) / TIME_BUCKET_SECONDS);
                 if (timeSlot >= 0 && timeSlot < timeSlots) {
                     timestampGroups[timeSlot].push(d.latency_ms);
                 }
             });
 
-            // Create aggregated data like official implementation
             const timestamps = [];
-            const yBins = [];    // binned y values per timestamp
-            const yCounts = [];  // counts per bin per timestamp
+            const yBins = [];
+            const yCounts = [];
 
             for (let t = 0; t < timeSlots; t++) {
-                const timestamp = startTime + (t * timeInterval);
-                timestamps.push(timestamp);
+                timestamps.push(startTime + (t * TIME_BUCKET_SECONDS));
 
                 const values = timestampGroups[t];
                 if (values.length === 0) {
@@ -445,26 +450,23 @@
                     continue;
                 }
 
-                // Bucket the values for this timestamp
                 const bucketMap = new Map();
                 values.forEach(v => {
                     const bucketVal = Math.floor((v - minLatency) / bucketSize) * bucketSize + minLatency;
                     bucketMap.set(bucketVal, (bucketMap.get(bucketVal) || 0) + 1);
                 });
 
-                // Sort by bucket value
                 const sortedBuckets = [...bucketMap.entries()].sort((a, b) => a[0] - b[0]);
-                yBins.push(sortedBuckets.map(([val, _]) => val));
-                yCounts.push(sortedBuckets.map(([_, count]) => count));
+                yBins.push(sortedBuckets.map(([val]) => val));
+                yCounts.push(sortedBuckets.map(([, count]) => count));
             }
 
-            // Prepare data for uPlot (official format)
             const plotData = [
-                timestamps,                           // x timestamps
-                timestamps.map(() => minLatency),     // min y values (dummy)
-                timestamps.map(() => maxLatency),     // max y values (dummy)
-                yBins,                               // binned y values per timestamp
-                yCounts                              // counts per bin per timestamp
+                timestamps,
+                timestamps.map(() => minLatency),
+                timestamps.map(() => maxLatency),
+                yBins,
+                yCounts
             ];
 
             const series = [
@@ -477,29 +479,21 @@
 
             const opts = {
                 title: "Latency Heatmap",
-                width: 1280,
-                height: 720,
+                width: CHART_WIDTH,
+                height: CHART_HEIGHT,
                 series: series,
                 scales: {
                     y: {
                         auto: true,
-                        range: [minLatency * 0.95, maxLatency * 1.05] // Auto Y-axis with padding
+                        range: [minLatency * 0.95, maxLatency * 1.05]
                     }
                 },
                 axes: [
                     {
                         label: "Time (UTC+8)",
-                        values: (u, vals) => vals.map(v => {
-                            const date = new Date(v * 1000);
-                            return date.toLocaleTimeString('en-US', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                                hour12: false
-                            });
-                        })
+                        values: (u, vals) => vals.map(formatTaipeiTime)
                     },
                     {
-                        // label: "Latency (ms)",
                         side: 3,
                         values: (u, vals) => vals.map(v => v.toFixed(1) + "ms")
                     }
@@ -508,10 +502,7 @@
                 plugins: [heatmapPlugin(bucketSize)]
             };
 
-            if (chart) {
-                chart.destroy();
-            }
-
+            if (chart) chart.destroy();
             chart = new uPlot(opts, plotData, document.getElementById('heatmap'));
         }
 
@@ -545,25 +536,32 @@
             const brokers = [...new Set(data.map(d => d.broker).filter(Boolean))].sort();
             const brokerSelect = document.getElementById('brokerSelect');
 
-            // Clear existing options except "All Brokers"
-            brokerSelect.innerHTML = '<option value="all">All Brokers</option>';
+            const existing = new Set(
+                Array.from(brokerSelect.options).map(o => o.value)
+            );
+            const desired = new Set(['all', ...brokers]);
 
-            // Add broker options
+            // Skip rebuild when the broker set hasn't changed — keeps user's selection.
+            if (existing.size === desired.size && [...existing].every(v => desired.has(v))) {
+                return;
+            }
+
+            const previous = brokerSelect.value;
+            brokerSelect.innerHTML = '<option value="all">All Brokers</option>';
             brokers.forEach(broker => {
                 const option = document.createElement('option');
                 option.value = broker;
                 option.textContent = broker;
                 brokerSelect.appendChild(option);
             });
+            if (desired.has(previous)) {
+                brokerSelect.value = previous;
+            }
         }
 
-        // Event listeners
         document.getElementById('brokerSelect').addEventListener('change', updateChart);
 
-        // Initialize
-        console.log('Starting heatmap initialization...');
         fetchData().then(data => {
-            console.log('Data fetched successfully');
             currentData = data;
             populateBrokerList(data);
             updateChart();
@@ -574,16 +572,16 @@
             updateChart();
         });
 
-        // Auto-refresh every 30 seconds
         setInterval(async () => {
             try {
                 const newData = await fetchData();
                 currentData = newData;
+                populateBrokerList(newData);
                 updateChart();
             } catch (error) {
                 console.warn('Failed to refresh data:', error);
             }
-        }, 30000);
+        }, REFRESH_INTERVAL_MS);
     </script>
 </body>
 
