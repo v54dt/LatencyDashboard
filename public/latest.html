@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Latency Time Series - Latency Dashboard</title>
+    <title>Latest 1 Hour - Latency Dashboard</title>
     <script src="https://unpkg.com/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/uplot@1.6.30/dist/uPlot.min.css">
     <style>
@@ -145,8 +145,8 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>📊 Latency Time Series</h1>
-            <p>Trading hours 08:00–14:00 (UTC+8)</p>
+            <h1>📊 Latest 1 Hour</h1>
+            <p>Real-time latency monitoring across brokers - Last 1 Hour</p>
         </div>
 
         <div class="controls">
@@ -180,23 +180,8 @@
         const CHART_WIDTH = 1280;
         const CHART_HEIGHT = 720;
         const REFRESH_INTERVAL_MS = 30000;
+        const ONE_HOUR_SECONDS = 3600;
         const FIVE_MIN_SECONDS = 300;
-        const WINDOW_START_HOUR = 8;
-        const WINDOW_END_HOUR = 14;
-
-        // Asia/Taipei is fixed UTC+8 with no DST, so a constant offset is safe.
-        function taipeiTodayAtHourEpoch(hour) {
-            const now = new Date();
-            const parts = new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'Asia/Taipei',
-                year: 'numeric', month: '2-digit', day: '2-digit'
-            }).formatToParts(now).reduce((acc, p) => {
-                if (p.type !== 'literal') acc[p.type] = p.value;
-                return acc;
-            }, {});
-            const utcMs = Date.UTC(+parts.year, +parts.month - 1, +parts.day, hour, 0, 0);
-            return Math.floor((utcMs - 8 * 3600 * 1000) / 1000);
-        }
 
         const colors = [
             '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
@@ -231,11 +216,11 @@
 
             if (chart) chart.destroy();
 
-            const start = taipeiTodayAtHourEpoch(WINDOW_START_HOUR);
-            const end = taipeiTodayAtHourEpoch(WINDOW_END_HOUR);
+            const now = Date.now() / 1000;
+            const start = now - ONE_HOUR_SECONDS;
             const timestamps = [];
 
-            for (let t = start; t <= end; t += FIVE_MIN_SECONDS) {
+            for (let t = start; t <= now; t += FIVE_MIN_SECONDS) {
                 timestamps.push(t);
             }
 
@@ -246,7 +231,7 @@
             ];
 
             const opts = {
-                title: "Latency Time Series",
+                title: "Latest 1 Hour",
                 width: CHART_WIDTH,
                 height: CHART_HEIGHT,
                 legend: { show: false },
@@ -272,7 +257,7 @@
 
         async function fetchData() {
             try {
-                const response = await fetch('/api/latency');
+                const response = await fetch('/api/latency/timeseries');
                 const rawData = await response.json();
 
                 if (rawData.length === 0) {
@@ -353,17 +338,17 @@
 
             if (chart) chart.destroy();
 
-            const start = taipeiTodayAtHourEpoch(WINDOW_START_HOUR);
-            const end = taipeiTodayAtHourEpoch(WINDOW_END_HOUR);
+            const now = Date.now() / 1000;
+            const start = now - ONE_HOUR_SECONDS;
 
             const opts = {
-                title: "Latency Time Series",
+                title: "Latest 1 Hour",
                 width: CHART_WIDTH,
                 height: CHART_HEIGHT,
                 legend: { show: false },
                 series: series,
                 scales: {
-                    x: { auto: true, min: start, max: end },
+                    x: { auto: true, min: start, max: now },
                     ms: { auto: true }
                 },
                 axes: [

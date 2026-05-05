@@ -45,8 +45,9 @@ readApp.get('/', (req, res) => {
   res.send(`
     <h1>Latency Dashboard</h1>
     <ul>
-      <li><a href="/latency-heatmap">Latency Heatmap</a></li>
-      <li><a href="/latency">Latency Time Series</a></li>
+      <li><a href="/latency-heatmap">Latency Heatmap (08:00–14:00)</a></li>
+      <li><a href="/latency">Latency Time Series (08:00–14:00)</a></li>
+      <li><a href="/latest">Latest 1 Hour</a></li>
     </ul>
   `);
 });
@@ -57,6 +58,10 @@ readApp.get('/latency-heatmap', (req, res) => {
 
 readApp.get('/latency', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'latency.html'));
+});
+
+readApp.get('/latest', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'latest.html'));
 });
 
 // Heatmap: today's 08:00–14:00 trading window in Asia/Taipei.
