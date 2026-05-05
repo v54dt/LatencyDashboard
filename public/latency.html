@@ -122,7 +122,7 @@
             margin-top: 10px;
             display: flex;
             flex-wrap: wrap;
-            gap: 15px;
+            gap: 8px;
             justify-content: center;
         }
 
@@ -130,7 +130,27 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            padding: 4px 12px;
             font-size: 0.9em;
+            border: 1px solid transparent;
+            border-radius: 999px;
+            cursor: pointer;
+            user-select: none;
+            transition: opacity 0.15s, border-color 0.15s, background 0.15s;
+        }
+
+        .legend-item:hover {
+            background: #edf2f7;
+        }
+
+        .legend-item.active {
+            border-color: #2b6cb0;
+            background: #ebf4ff;
+            font-weight: 600;
+        }
+
+        .legend.has-selection .legend-item:not(.active) {
+            opacity: 0.4;
         }
 
         .legend-color {
@@ -138,6 +158,7 @@
             height: 3px;
             border-radius: 2px;
         }
+
     </style>
 </head>
 
@@ -171,6 +192,12 @@
         let chart = null;
         let chartData = null;
         let refreshInterval = null;
+
+        // State retained across refreshes so the broker filter survives auto-refresh.
+        let latestRawData = [];
+        let latestBrokers = [];
+        let brokerColors = {}; // broker -> stroke color
+        let selectedBroker = null;
 
         const CHART_WIDTH = 1280;
         const CHART_HEIGHT = 720;
@@ -229,6 +256,7 @@
                 title: "Latency Over Time (Latest 1 Hour)",
                 width: CHART_WIDTH,
                 height: CHART_HEIGHT,
+                legend: { show: false },
                 series: series,
                 scales: {
                     x: { auto: true },
@@ -256,10 +284,16 @@
                 const rawData = await response.json();
 
                 if (rawData.length === 0) {
-                    // Create empty chart with grid
+                    latestRawData = [];
+                    latestBrokers = [];
+                    brokerColors = {};
+                    selectedBroker = null;
                     createEmptyChart();
                     document.getElementById('loading').style.display = 'none';
                     document.getElementById('chart').style.display = 'block';
+                    document.getElementById('legend').innerHTML = '';
+                    document.getElementById('legend').classList.remove('has-selection');
+                    document.getElementById('statsContainer').innerHTML = '';
                     return;
                 }
 
@@ -300,9 +334,19 @@
                     });
                 });
 
+                latestRawData = rawData;
+                latestBrokers = brokers;
+                brokerColors = {};
+                brokers.forEach((b, i) => { brokerColors[b] = colors[i % colors.length]; });
+
+                // If the previously-selected broker disappeared from the new data, clear the filter.
+                if (selectedBroker && !brokers.includes(selectedBroker)) {
+                    selectedBroker = null;
+                }
+
                 chartData = plotData;
                 createChart(chartData, series);
-                updateStats(rawData, brokers);
+                renderStats();
                 updateTimeRange(sortedTimestamps);
 
             } catch (error) {
@@ -323,6 +367,7 @@
                 title: "Latency Over Time (Latest 1 Hour)",
                 width: CHART_WIDTH,
                 height: CHART_HEIGHT,
+                legend: { show: false },
                 series: series,
                 scales: {
                     x: { auto: true, min: start, max: now },
@@ -347,55 +392,93 @@
             document.getElementById('loading').style.display = 'none';
             chartContainer.style.display = 'block';
 
-            updateLegend(series.slice(1));
+            renderLegend();
+            applyChartFilter(); // re-apply after chart was rebuilt by refresh
         }
 
-        function updateLegend(series) {
+        function applyChartFilter() {
+            if (!chart) return;
+            latestBrokers.forEach((broker, idx) => {
+                const seriesIdx = idx + 1; // series[0] is the time axis
+                const shouldShow = selectedBroker === null || selectedBroker === broker;
+                chart.setSeries(seriesIdx, { show: shouldShow });
+            });
+        }
+
+        function renderLegend() {
             const legend = document.getElementById('legend');
             legend.innerHTML = '';
+            legend.classList.toggle('has-selection', selectedBroker !== null);
 
-            series.forEach(s => {
+            latestBrokers.forEach(broker => {
                 const item = document.createElement('div');
-                item.className = 'legend-item';
+                item.className = 'legend-item' + (broker === selectedBroker ? ' active' : '');
+                item.title = 'Click to filter stats to this broker';
                 item.innerHTML = `
-                    <div class="legend-color" style="background-color: ${s.stroke}"></div>
-                    <span>${s.label}</span>
+                    <div class="legend-color" style="background-color: ${brokerColors[broker]}"></div>
+                    <span>${broker}</span>
                 `;
+                item.addEventListener('click', () => {
+                    selectedBroker = (selectedBroker === broker) ? null : broker;
+                    renderLegend();
+                    renderStats();
+                    applyChartFilter();
+                });
                 legend.appendChild(item);
             });
         }
 
-        function updateStats(rawData, brokers) {
+        function renderStats() {
             const statsContainer = document.getElementById('statsContainer');
-            statsContainer.innerHTML = '';
 
-            const allLatencies = rawData.map(row => row.latency_ms);
-            const avgLatency = allLatencies.reduce((a, b) => a + b, 0) / allLatencies.length;
-            const maxLatency = arrayMax(allLatencies);
-            const sortedAsc = allLatencies.slice().sort((a, b) => a - b);
-            const p99Latency = percentile(sortedAsc, 0.99);
+            const filtered = selectedBroker
+                ? latestRawData.filter(r => r.broker === selectedBroker)
+                : latestRawData;
+
+            if (filtered.length === 0) {
+                statsContainer.innerHTML = `
+                    <div class="stat-item">
+                        <div class="stat-value">0</div>
+                        <div class="stat-label">Total Samples</div>
+                    </div>
+                `;
+                return;
+            }
+
+            const latencies = filtered.map(r => r.latency_ms);
+            const avg = latencies.reduce((a, b) => a + b, 0) / latencies.length;
+            const max = arrayMax(latencies);
+            const sortedAsc = latencies.slice().sort((a, b) => a - b);
+            const p99 = percentile(sortedAsc, 0.99);
+
+            const lastStat = selectedBroker
+                ? `<div class="stat-item">
+                       <div class="stat-value" style="color: ${brokerColors[selectedBroker] || '#2b6cb0'}">${selectedBroker}</div>
+                       <div class="stat-label">Showing</div>
+                   </div>`
+                : `<div class="stat-item">
+                       <div class="stat-value">${latestBrokers.length}</div>
+                       <div class="stat-label">Active Brokers</div>
+                   </div>`;
 
             statsContainer.innerHTML = `
                 <div class="stat-item">
-                    <div class="stat-value">${allLatencies.length.toLocaleString()}</div>
+                    <div class="stat-value">${latencies.length.toLocaleString()}</div>
                     <div class="stat-label">Total Samples</div>
                 </div>
                 <div class="stat-item">
-                    <div class="stat-value">${avgLatency.toFixed(2)}ms</div>
+                    <div class="stat-value">${avg.toFixed(2)}ms</div>
                     <div class="stat-label">Average Latency</div>
                 </div>
                 <div class="stat-item">
-                    <div class="stat-value">${maxLatency.toFixed(2)}ms</div>
+                    <div class="stat-value">${max.toFixed(2)}ms</div>
                     <div class="stat-label">Max Latency</div>
                 </div>
                 <div class="stat-item">
-                    <div class="stat-value">${p99Latency.toFixed(2)}ms</div>
+                    <div class="stat-value">${p99.toFixed(2)}ms</div>
                     <div class="stat-label">99th Percentile</div>
                 </div>
-                <div class="stat-item">
-                    <div class="stat-value">${brokers.length}</div>
-                    <div class="stat-label">Active Brokers</div>
-                </div>
+                ${lastStat}
             `;
         }
 
