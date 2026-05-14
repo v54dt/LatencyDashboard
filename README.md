@@ -11,7 +11,7 @@ A modern web application for visualizing order execution latency across differen
 - **🏢 Broker Analysis**: Compare latency performance across multiple brokers
 - **⏰ Time-based Filtering**: Focus on trading hours (08:00-14:00 UTC+8)
 - **📊 Statistical Insights**: Average, maximum, and 99th percentile latency metrics
-- **✏️ HTTP Write API**: POST `/api/latency` on the dedicated write port for ingestion
+- **✏️ HTTP Write API**: POST `/api/order-metrics` and `/api/network-metrics` on the dedicated write port for ingestion
 - **🔄 Auto-refresh**: Data updates every 30 seconds
 
 ## 🛠️ Tech Stack
@@ -94,11 +94,12 @@ cd ../utils/
 
 ### 4. Access Dashboard
 
-- **Main Dashboard**: http://localhost:3000
-- **Latency Heatmap**: http://localhost:3000/latency-heatmap
-- **Time Series**:    http://localhost:3000/latency
-- **Read API**:       http://localhost:3000/api/latency
-- **Write API**:      http://localhost:3001/api/latency
+- **Main Dashboard**:    http://localhost:3000
+- **Latency Heatmap**:   http://localhost:3000/latency-heatmap
+- **Time Series**:       http://localhost:3000/latency
+- **Read API**:          http://localhost:3000/api/order-metrics
+- **Write APIs**:        http://localhost:3001/api/order-metrics
+                         http://localhost:3001/api/network-metrics
 
 ## 📊 API Reference
 
@@ -109,37 +110,69 @@ The application runs two HTTP servers:
 | Read   | `APP_PORT`   | Dashboard pages + GETs |
 | Write  | `WRITE_PORT` | Ingestion (POST)       |
 
-### GET `/api/latency`
+### GET `/api/order-metrics`
 
-Today's 08:00–14:00 (Asia/Taipei) trading window, used by the heatmap.
+Today's 08:00–14:00 (Asia/Taipei) trading window, used by the heatmap and
+time-series page. Excludes rows where `total_ms` is `NULL` (i.e., failed orders).
 
 ```json
 [
-  { "timestamp": 1726250400, "broker": "BrokerA", "latency_ms": 25.334 }
+  { "timestamp": 1726250400, "broker": "BrokerA", "total_ms": 25.334 }
 ]
 ```
 
-### GET `/api/latency/timeseries`
+### GET `/api/order-metrics/timeseries`
 
-Last 1 hour, used by the time-series page.
+Last 1 hour of successful orders, used by the latest-hour page.
 
-### POST `/api/latency`
+### POST `/api/order-metrics`
 
-Insert a single latency record. Request body:
+Insert a single order metric. `broker`, `iteration_id`, and `outcome` are
+required (enforced by DB `NOT NULL` / `CHECK`). Everything else is optional.
+`timestamp` defaults to `NOW()` if omitted.
 
 ```json
 {
-  "broker":     "BrokerA",        // required, ≤50 chars
-  "latency_ms": 25.334,           // required, finite ≥ 0
-  "timestamp":  "2026-05-05T08:00:00+08:00",  // optional, defaults to now
-  "symbol":     "AAPL",           // optional, ≤20 chars
-  "side":       "B",              // optional, "B" or "S"
-  "price":      145.67,           // optional, finite ≥ 0
-  "volume":     1000              // optional, integer ≥ 0
+  "timestamp":                 "2026-05-14T08:00:00+08:00",
+  "iteration_id":              1234,
+  "broker":                    "BrokerA",
+  "outcome":                   "success",
+  "error_message":             null,
+  "total_ms":                  48.7,
+  "sdk_local_ms":              0.4,
+  "ack_rtt_ms":                25.1,
+  "cancel_rtt_ms":             20.2,
+  "minor_faults":              3,
+  "major_faults":              0,
+  "voluntary_ctxt_switches":   2,
+  "involuntary_ctxt_switches": 0,
+  "tcp_rtt_us":                21000,
+  "tcp_rttvar_us":             1500,
+  "tcp_snd_cwnd":              40,
+  "tcp_retrans":               0
 }
 ```
 
-Returns `201` on success, `400` on validation errors, `500` on DB errors.
+### POST `/api/network-metrics`
+
+Insert a single network probe. `broker` and `iteration_id` are required.
+
+```json
+{
+  "timestamp":                "2026-05-14T08:00:00+08:00",
+  "iteration_id":              1234,
+  "broker":                    "BrokerA",
+  "dns_ms":                    1.8,
+  "tcp_handshake_ms":          14.7,
+  "tls_handshake_ms":          38.2,
+  "tls_handshake_resumed_ms":  7.9,
+  "resumption_supported":      true,
+  "error":                     null
+}
+```
+
+Both POST endpoints return `201` on success, `400` on constraint violations
+(NOT NULL / CHECK), and `500` on other DB errors.
 
 ## 🔧 Configuration
 
@@ -162,22 +195,17 @@ WRITE_PORT=3001
 
 ### Database Schema
 
-```sql
-CREATE TABLE order_latency (
-    id          BIGSERIAL PRIMARY KEY,
-    timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    broker      VARCHAR(50) NOT NULL,
-    latency_ms  DOUBLE PRECISION NOT NULL,
-    symbol      VARCHAR(20),
-    side        CHAR(1) CHECK (side IN ('B', 'S')),
-    price       DOUBLE PRECISION,
-    volume      INTEGER
-);
+Two tables plus a joined view. See [init.sql](init.sql) for the full DDL.
 
-CREATE INDEX idx_order_latency_timestamp ON order_latency(timestamp);
-CREATE INDEX idx_order_latency_broker    ON order_latency(broker);
-CREATE INDEX idx_order_latency_symbol    ON order_latency(symbol);
-```
+- **`order_metrics`** — one row per order attempt. Records outcome, full timing
+  breakdown (`total_ms`, `sdk_local_ms`, `ack_rtt_ms`, `cancel_rtt_ms`), kernel
+  RTT (`tcp_rtt_us`), page-fault and context-switch counters. Timing columns are
+  nullable so failed orders still produce a row for accurate success-rate math.
+- **`network_metrics`** — one row per network probe. DNS, TCP, TLS handshake
+  times plus a resumed-handshake variant.
+- **`iteration_view`** — `order_metrics` left-joined against the closest
+  `network_metrics` row by `(broker, iteration_id)` within ±1 minute. The time
+  window prevents collisions when a process restart resets `iteration_id`.
 
 ### Timezone
 
@@ -214,22 +242,19 @@ cd scripts/utils/
 
 ## 📈 Data Model
 
-### Latency Data Structure
-
-- **timestamp**: Order execution timestamp (microsecond precision)
-- **broker**: Broker identifier (BrokerA, BrokerB, BrokerC)
-- **latency_ms**: Order execution latency in milliseconds
-- **symbol**: Stock symbol (AAPL, MSFT, NVDA, etc.)
-- **side**: Order side (B=Buy, S=Sell)
-- **price**: Order price
-- **volume**: Order volume
-
 ### Data Generation
 
-- **Frequency**: Every 5 seconds during trading hours
-- **Distribution**: Normal distribution (μ=30ms, σ=5ms, min=1ms)
-- **Time Range**: Configurable (default: 6-hour trading session)
-- **Symbols**: Major tech stocks (AAPL, MSFT, NVDA, TSLA, etc.)
+The dashboard charts read `total_ms` from `order_metrics`. The synthetic
+generator produces both tables:
+
+- **Order rows**: one per broker every 5 seconds. ~98% `outcome = 'success'`;
+  the rest are randomly distributed across `ack_timeout`, `submit_error`,
+  `cancel_timeout`, `cancel_error` with NULL timing. `total_ms` is the sum of
+  `ack_rtt_ms` (≈N(25, 5)), `sdk_local_ms` (≈N(0.5, 0.2)), and `cancel_rtt_ms`
+  (≈N(20, 4)), plus a small jitter. Kernel/OS counters are plausible but coarse.
+- **Network rows**: one per broker per minute. `iteration_id` is aligned so the
+  `iteration_view` LATERAL join can match them to the order rows in the same
+  minute (12 orders per minute → network probe at `iteration_id = i * 12`).
 
 ## 🔍 Visualization Features
 

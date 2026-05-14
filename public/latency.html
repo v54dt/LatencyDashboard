@@ -272,7 +272,7 @@
 
         async function fetchData() {
             try {
-                const response = await fetch('/api/latency');
+                const response = await fetch('/api/order-metrics');
                 const rawData = await response.json();
 
                 if (rawData.length === 0) {
@@ -298,7 +298,7 @@
                     if (!brokerData[row.broker]) {
                         brokerData[row.broker] = {};
                     }
-                    brokerData[row.broker][row.timestamp] = row.latency_ms;
+                    brokerData[row.broker][row.timestamp] = row.total_ms;
                     timestamps.add(row.timestamp);
                 });
 
@@ -448,7 +448,7 @@
                 return;
             }
 
-            const latencies = filtered.map(r => r.latency_ms);
+            const latencies = filtered.map(r => r.total_ms);
             const avg = latencies.reduce((a, b) => a + b, 0) / latencies.length;
             const max = arrayMax(latencies);
             const sortedAsc = latencies.slice().sort((a, b) => a - b);

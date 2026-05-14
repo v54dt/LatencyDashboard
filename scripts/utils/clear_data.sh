@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Clear all rows from the order_latency table.
+# Clear all rows from the order_metrics and network_metrics tables.
 # Usage: ./clear_data.sh
 
 set -euo pipefail
@@ -20,7 +20,7 @@ DB_PORT="${DB_PORT:-5432}"
 POSTGRES_DB="${POSTGRES_DB:-latency_db}"
 POSTGRES_USER="${POSTGRES_USER:-admin}"
 
-echo "Clearing data from order_latency table..."
+echo "Clearing data from order_metrics and network_metrics tables..."
 echo "Database: $POSTGRES_DB on $DB_HOST:$DB_PORT"
 echo "User: $POSTGRES_USER"
 
@@ -32,6 +32,6 @@ fi
 
 PGPASSWORD="$POSTGRES_PASSWORD" psql \
     -h "$DB_HOST" -p "$DB_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-    -c "TRUNCATE TABLE order_latency;"
+    -c "TRUNCATE TABLE order_metrics, network_metrics;"
 
 echo "All data cleared successfully!"

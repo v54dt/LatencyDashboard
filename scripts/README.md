@@ -43,7 +43,7 @@ node generate_data.js 6 "2025-09-15T08:00:00Z" # 6 hours from specific date
 
 
 ### clear_data.sh
-Safely clear all data from the order_latency table.
+Safely clear all data from the order_metrics and network_metrics tables.
 
 **Usage:**
 ```bash
@@ -71,14 +71,19 @@ cd utils/
 
 ## 📋 Data Structure
 
-All generated data includes:
-- **timestamp**: Sequential timestamps (every 5 seconds)
-- **broker**: Random selection from BrokerA, BrokerB, BrokerC
-- **latency_ms**: Normal distribution (mean=30ms, stddev=5ms, min=1ms)
-- **symbol**: Random stock symbols (AAPL, MSFT, NVDA, TSLA, AMZN, META, GOOGL, NFLX)
-- **side**: Buy (B) or Sell (S)
-- **price**: Random price between $100-600
-- **volume**: Random volume between 100-600 shares
+Generates two tables:
+
+**`order_metrics`** (one row per broker every 5 seconds)
+- `timestamp`, `iteration_id` (per-broker counter), `broker`
+- `outcome`: ~98% `success`, ~2% spread across `ack_timeout` / `submit_error` /
+  `cancel_timeout` / `cancel_error` (with NULL timing)
+- `total_ms` ≈ `ack_rtt_ms` + `sdk_local_ms` + `cancel_rtt_ms` + jitter
+- Fault and context-switch counters; kernel TCP stats
+
+**`network_metrics`** (one row per broker per minute)
+- DNS / TCP handshake / TLS handshake (cold + resumed) timings
+- `iteration_id` aligned so the `iteration_view` LATERAL join matches the
+  corresponding `order_metrics` row (`network.iteration_id = i * 12`)
 
 ## 🚀 Quick Start
 

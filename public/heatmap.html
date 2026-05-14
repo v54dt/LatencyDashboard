@@ -243,7 +243,7 @@
 
         async function fetchData() {
             try {
-                const response = await fetch('/api/latency');
+                const response = await fetch('/api/order-metrics');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 return await response.json();
             } catch (error) {
@@ -268,7 +268,7 @@
 
                     data.push({
                         timestamp: Math.floor(t / 1000),
-                        latency_ms: Math.max(0.1, baseLatency + noise + spike),
+                        total_ms: Math.max(0.1, baseLatency + noise + spike),
                         broker: broker
                     });
                 }
@@ -438,7 +438,7 @@
             let filteredData = data.filter(d =>
                 d.timestamp >= startTime &&
                 d.timestamp <= endTime &&
-                d.latency_ms > 0
+                d.total_ms > 0
             );
 
             if (selectedBroker !== null) {
@@ -451,7 +451,7 @@
                 return;
             }
 
-            const latencies = filteredData.map(d => d.latency_ms).sort((a, b) => a - b);
+            const latencies = filteredData.map(d => d.total_ms).sort((a, b) => a - b);
             updateStats({
                 total: latencies.length,
                 avg: latencies.reduce((a, b) => a + b, 0) / latencies.length,
@@ -470,7 +470,7 @@
             filteredData.forEach(d => {
                 const timeSlot = Math.floor((d.timestamp - startTime) / TIME_BUCKET_SECONDS);
                 if (timeSlot >= 0 && timeSlot < timeSlots) {
-                    timestampGroups[timeSlot].push(d.latency_ms);
+                    timestampGroups[timeSlot].push(d.total_ms);
                 }
             });
 

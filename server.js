@@ -68,23 +68,24 @@ readApp.get('/latest', (req, res) => {
 // With session TZ set to Asia/Taipei, CURRENT_DATE is local and we can
 // build the window directly without DATE()/EXTRACT() tricks that defeat
 // the timestamp index.
-readApp.get('/api/latency', async (req, res) => {
+readApp.get('/api/order-metrics', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
         EXTRACT(EPOCH FROM date_trunc('second', timestamp)) AS timestamp,
         broker,
-        latency_ms
-      FROM order_latency
+        total_ms
+      FROM order_metrics
       WHERE timestamp >= CURRENT_DATE + TIME '08:00'
         AND timestamp <  CURRENT_DATE + TIME '14:00'
+        AND total_ms IS NOT NULL
       ORDER BY timestamp ASC
     `);
 
     res.json(result.rows.map(row => ({
       timestamp: parseFloat(row.timestamp),
       broker: row.broker,
-      latency_ms: parseFloat(row.latency_ms),
+      total_ms: parseFloat(row.total_ms),
     })));
   } catch (err) {
     console.error(err);
@@ -92,22 +93,23 @@ readApp.get('/api/latency', async (req, res) => {
   }
 });
 
-readApp.get('/api/latency/timeseries', async (req, res) => {
+readApp.get('/api/order-metrics/timeseries', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
         EXTRACT(EPOCH FROM date_trunc('second', timestamp)) AS timestamp,
         broker,
-        latency_ms
-      FROM order_latency
+        total_ms
+      FROM order_metrics
       WHERE timestamp >= NOW() - INTERVAL '1 hour'
+        AND total_ms IS NOT NULL
       ORDER BY timestamp ASC
     `);
 
     res.json(result.rows.map(row => ({
       timestamp: parseFloat(row.timestamp),
       broker: row.broker,
-      latency_ms: parseFloat(row.latency_ms),
+      total_ms: parseFloat(row.total_ms),
     })));
   } catch (err) {
     console.error(err);
@@ -116,75 +118,82 @@ readApp.get('/api/latency/timeseries', async (req, res) => {
 });
 
 // WRITE APP ROUTES
-writeApp.post('/api/latency', async (req, res) => {
+// No JS-side type checking — DB NOT NULL / CHECK constraints will surface
+// bad payloads as 400s.
+writeApp.post('/api/order-metrics', async (req, res) => {
   try {
-    const { broker, latency_ms, timestamp, symbol, side, price, volume } = req.body;
-
-    if (!broker || latency_ms === undefined) {
-      return res.status(400).json({
-        error: 'Missing required fields: broker and latency_ms are required'
-      });
-    }
-
-    if (typeof broker !== 'string' || broker.length === 0 || broker.length > 50) {
-      return res.status(400).json({
-        error: 'broker must be a non-empty string with max 50 characters'
-      });
-    }
-
-    if (typeof latency_ms !== 'number' || latency_ms < 0 || !isFinite(latency_ms)) {
-      return res.status(400).json({
-        error: 'latency_ms must be a non-negative finite number'
-      });
-    }
-
-    const timestampToUse = timestamp ? new Date(timestamp) : new Date();
-    if (timestamp && isNaN(timestampToUse.getTime())) {
-      return res.status(400).json({
-        error: 'Invalid timestamp format'
-      });
-    }
-
-    if (symbol !== undefined && symbol !== null) {
-      if (typeof symbol !== 'string' || symbol.length > 20) {
-        return res.status(400).json({
-          error: 'symbol must be a string with max 20 characters'
-        });
-      }
-    }
-
-    if (side !== undefined && side !== null) {
-      if (side !== 'B' && side !== 'S') {
-        return res.status(400).json({
-          error: "side must be 'B' or 'S'"
-        });
-      }
-    }
-
-    if (price !== undefined && price !== null) {
-      if (typeof price !== 'number' || price < 0 || !isFinite(price)) {
-        return res.status(400).json({
-          error: 'price must be a non-negative finite number'
-        });
-      }
-    }
-
-    if (volume !== undefined && volume !== null) {
-      if (!Number.isInteger(volume) || volume < 0) {
-        return res.status(400).json({
-          error: 'volume must be a non-negative integer'
-        });
-      }
-    }
+    const b = req.body || {};
+    const ts = b.timestamp ? new Date(b.timestamp) : new Date();
 
     await pool.query(
-      'INSERT INTO order_latency (timestamp, broker, latency_ms, symbol, side, price, volume) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-      [timestampToUse, broker, latency_ms, symbol, side, price, volume]
+      `INSERT INTO order_metrics (
+         timestamp, iteration_id, broker,
+         outcome, error_message,
+         total_ms, sdk_local_ms, ack_rtt_ms, cancel_rtt_ms,
+         minor_faults, major_faults,
+         voluntary_ctxt_switches, involuntary_ctxt_switches,
+         tcp_rtt_us, tcp_rttvar_us, tcp_snd_cwnd, tcp_retrans
+       ) VALUES (
+         $1, $2, $3,
+         $4, $5,
+         $6, $7, $8, $9,
+         $10, $11,
+         $12, $13,
+         $14, $15, $16, $17
+       )`,
+      [
+        ts, b.iteration_id, b.broker,
+        b.outcome, b.error_message ?? null,
+        b.total_ms ?? null, b.sdk_local_ms ?? null,
+        b.ack_rtt_ms ?? null, b.cancel_rtt_ms ?? null,
+        b.minor_faults ?? null, b.major_faults ?? null,
+        b.voluntary_ctxt_switches ?? null, b.involuntary_ctxt_switches ?? null,
+        b.tcp_rtt_us ?? null, b.tcp_rttvar_us ?? null,
+        b.tcp_snd_cwnd ?? null, b.tcp_retrans ?? null,
+      ]
     );
 
-    res.status(201).json({ message: 'Data inserted successfully' });
+    res.status(201).json({ message: 'order_metrics inserted' });
   } catch (err) {
-    console.error('Error inserting data:', err);
+    if (err.code === '23502' || err.code === '23514') {
+      return res.status(400).json({ error: err.message });
+    }
+    console.error('Error inserting order_metrics:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+writeApp.post('/api/network-metrics', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const ts = b.timestamp ? new Date(b.timestamp) : new Date();
+
+    await pool.query(
+      `INSERT INTO network_metrics (
+         timestamp, iteration_id, broker,
+         dns_ms, tcp_handshake_ms, tls_handshake_ms,
+         tls_handshake_resumed_ms, resumption_supported,
+         error
+       ) VALUES (
+         $1, $2, $3,
+         $4, $5, $6,
+         $7, $8,
+         $9
+       )`,
+      [
+        ts, b.iteration_id, b.broker,
+        b.dns_ms ?? null, b.tcp_handshake_ms ?? null, b.tls_handshake_ms ?? null,
+        b.tls_handshake_resumed_ms ?? null, b.resumption_supported ?? null,
+        b.error ?? null,
+      ]
+    );
+
+    res.status(201).json({ message: 'network_metrics inserted' });
+  } catch (err) {
+    if (err.code === '23502' || err.code === '23514') {
+      return res.status(400).json({ error: err.message });
+    }
+    console.error('Error inserting network_metrics:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });
@@ -197,8 +206,9 @@ const writeServer = writeApp.listen(writePort, '0.0.0.0', () => {
   console.log(`Write server (POST) listening on http://0.0.0.0:${writePort}`);
 });
 
-console.log(`Dashboard:  http://localhost:${readPort}`);
-console.log(`Write API:  http://localhost:${writePort}/api/latency`);
+console.log(`Dashboard:   http://localhost:${readPort}`);
+console.log(`Write APIs:  http://localhost:${writePort}/api/order-metrics`);
+console.log(`             http://localhost:${writePort}/api/network-metrics`);
 
 function shutdown(signal) {
   console.log(`Received ${signal}, draining connections...`);

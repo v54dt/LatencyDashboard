@@ -40,32 +40,57 @@ PGPASSWORD="$POSTGRES_PASSWORD" psql \
     -h "$DB_HOST" -p "$DB_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
     -c "
 SELECT
-    'Total Records' AS metric,
-    COUNT(*)::text AS value
-FROM order_latency
+    'order_metrics rows'   AS metric,
+    COUNT(*)::text         AS value
+FROM order_metrics
 UNION ALL
 SELECT
-    'Unique Brokers',
+    'network_metrics rows',
+    COUNT(*)::text
+FROM network_metrics
+UNION ALL
+SELECT
+    'unique brokers',
     COUNT(DISTINCT broker)::text
-FROM order_latency
+FROM order_metrics
 UNION ALL
 SELECT
-    'Date Range',
+    'success rate',
+    CASE
+        WHEN COUNT(*) > 0 THEN
+            ROUND(100.0 * COUNT(*) FILTER (WHERE outcome = 'success') / COUNT(*), 2)::text || '%'
+        ELSE 'n/a'
+    END
+FROM order_metrics
+UNION ALL
+SELECT
+    'order date range',
     CASE
         WHEN COUNT(*) > 0 THEN
             TO_CHAR(MIN(timestamp), 'YYYY-MM-DD') || ' to ' || TO_CHAR(MAX(timestamp), 'YYYY-MM-DD')
         ELSE 'No data'
     END
-FROM order_latency;
+FROM order_metrics;
 "
 
 echo
-echo "=== Recent Data Sample ==="
+echo "=== Recent order_metrics ==="
 PGPASSWORD="$POSTGRES_PASSWORD" psql \
     -h "$DB_HOST" -p "$DB_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
     -c "
-SELECT timestamp, broker, latency_ms, symbol
-FROM order_latency
+SELECT timestamp, broker, outcome, total_ms, ack_rtt_ms
+FROM order_metrics
+ORDER BY timestamp DESC
+LIMIT 5;
+"
+
+echo
+echo "=== Recent network_metrics ==="
+PGPASSWORD="$POSTGRES_PASSWORD" psql \
+    -h "$DB_HOST" -p "$DB_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -c "
+SELECT timestamp, broker, dns_ms, tcp_handshake_ms, tls_handshake_ms, resumption_supported
+FROM network_metrics
 ORDER BY timestamp DESC
 LIMIT 5;
 "
