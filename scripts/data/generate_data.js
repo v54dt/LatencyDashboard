@@ -39,35 +39,69 @@ function pickFailure() {
 // Build one order_metrics row.
 function makeOrderRow(timestampStr, broker, iterationId, brokerOffset) {
     const isFailure = Math.random() < FAILURE_RATE;
+    const outcome = isFailure ? pickFailure() : 'success';
+    const errorMsg = isFailure ? `synthetic ${outcome}` : null;
 
-    if (isFailure) {
-        const outcome = pickFailure();
-        return [
-            timestampStr, iterationId, broker,
-            outcome, `synthetic ${outcome}`,
-            null, null, null, null,
-            randInt(0, 5), 0,
-            randInt(0, 3), randInt(0, 2),
-            null, null, null, null,
-        ];
-    }
-
-    // Normal-ish latency profile. ack_rtt dominates total; sdk_local is tiny.
-    const ackRtt = Math.max(1, gaussian(25 + brokerOffset, 5));
+    // Generate plausible values; mask per outcome below to match client.
     const sdkLocal = Math.max(0.05, gaussian(0.5, 0.2));
+    const ackRtt = Math.max(1, gaussian(25 + brokerOffset, 5));
     const cancelRtt = Math.max(1, gaussian(20 + brokerOffset, 4));
     const total = ackRtt + sdkLocal + cancelRtt + Math.max(0, gaussian(2, 1));
-
-    return [
-        timestampStr, iterationId, broker,
-        'success', null,
-        total, sdkLocal, ackRtt, cancelRtt,
-        randInt(0, 10), 0,
-        randInt(0, 5), randInt(0, 3),
-        Math.round(ackRtt * 1000 * 0.85),   // kernel rtt slightly below ack_rtt
+    const rusage = [randInt(0, 10), 0, randInt(0, 5), randInt(0, 3)];
+    const tcp = [
+        Math.round(ackRtt * 1000 * 0.85),  // kernel rtt slightly below ack_rtt
         randInt(500, 5000),
         randInt(10, 100),
         randInt(0, 2),
+    ];
+    const nulls4 = [null, null, null, null];
+
+    // Null patterns per outcome — matches client's actual emit behavior:
+    //   success        : all valid
+    //   ack_timeout    : everything null (submit cb never fired)
+    //   submit_error   : sdk_local valid + rusage; ack/total/cancel null; tcp null
+    //   cancel_timeout : submit succeeded so timing/rusage/tcp valid; cancel_rtt null
+    //   cancel_error   : cancel cb fired with success=false; everything valid
+    let total_ms, sdk_local_ms, ack_rtt_ms, cancel_rtt_ms;
+    let rusageRow, tcpRow;
+    switch (outcome) {
+        case 'ack_timeout':
+            total_ms = sdk_local_ms = ack_rtt_ms = cancel_rtt_ms = null;
+            rusageRow = nulls4;
+            tcpRow = nulls4;
+            break;
+        case 'submit_error':
+            sdk_local_ms = sdkLocal;
+            total_ms = ack_rtt_ms = cancel_rtt_ms = null;
+            rusageRow = rusage;
+            tcpRow = nulls4;
+            break;
+        case 'cancel_timeout':
+            total_ms = total;
+            sdk_local_ms = sdkLocal;
+            ack_rtt_ms = ackRtt;
+            cancel_rtt_ms = null;
+            rusageRow = rusage;
+            tcpRow = tcp;
+            break;
+        case 'cancel_error':
+        case 'success':
+        default:
+            total_ms = total;
+            sdk_local_ms = sdkLocal;
+            ack_rtt_ms = ackRtt;
+            cancel_rtt_ms = cancelRtt;
+            rusageRow = rusage;
+            tcpRow = tcp;
+            break;
+    }
+
+    return [
+        timestampStr, iterationId, broker,
+        outcome, errorMsg,
+        total_ms, sdk_local_ms, ack_rtt_ms, cancel_rtt_ms,
+        ...rusageRow,
+        ...tcpRow,
     ];
 }
 
