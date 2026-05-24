@@ -128,7 +128,10 @@ async function generateAndInsertData() {
         console.log('Starting synthetic data generation...');
 
         const hours = parseInt(process.argv[2]) || 24;
-        const startDate = process.argv[3] || '2025-09-14T00:00:00.000Z';
+
+        const startDate =
+            process.argv[3] ||
+            new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
         const startTime = new Date(startDate);
         const orderIntervalMs = 5000;     // one order per broker every 5s
@@ -241,7 +244,10 @@ async function batchInsert(client, sqlPrefix, rows, cols) {
 if (require.main === module) {
     console.log('Latency Dashboard - synthetic data generator');
     console.log('Usage: node generate_data.js [hours] [start_date]');
-    console.log('Example: node generate_data.js 6 "2025-09-14T08:00:00.000Z"');
+    console.log('  hours       default 24');
+    console.log('  start_date  ISO8601, default = now - hours');
+    console.log('Example: node generate_data.js 6');
+    console.log('         node generate_data.js 6 "2025-09-14T08:00:00.000Z"');
     console.log('');
 
     generateAndInsertData().catch(console.error);
