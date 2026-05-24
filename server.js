@@ -48,6 +48,8 @@ readApp.get('/', (req, res) => {
       <li><a href="/latency-heatmap">Latency Heatmap (08:00–14:00)</a></li>
       <li><a href="/latency">Latency Time Series (08:00–14:00)</a></li>
       <li><a href="/latest">Latest 1 Hour</a></li>
+      <li><a href="/order">Order Metric Breakdown (08:00–14:00)</a></li>
+      <li><a href="/network">Network Probe Metric (08:00–14:00)</a></li>
     </ul>
   `);
 });
@@ -62,6 +64,14 @@ readApp.get('/latency', (req, res) => {
 
 readApp.get('/latest', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'latest.html'));
+});
+
+readApp.get('/order', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'order.html'));
+});
+
+readApp.get('/network', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'network.html'));
 });
 
 // Heatmap: today's 08:00–14:00 trading window in Asia/Taipei.
@@ -110,6 +120,80 @@ readApp.get('/api/order-metrics/timeseries', async (req, res) => {
       timestamp: parseFloat(row.timestamp),
       broker: row.broker,
       total_ms: parseFloat(row.total_ms),
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Order metric breakdown: today's 08:00–14:00 window, all outcomes (including
+// failures so the page can show success rate). Returns the per-stage timing
+// plus kernel TCP info so the dashboard can plot bottleneck breakdown.
+readApp.get('/api/order-metrics/breakdown', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) AS timestamp,
+        broker,
+        outcome,
+        total_ms,
+        sdk_local_ms,
+        ack_rtt_ms,
+        cancel_rtt_ms,
+        tcp_rtt_us,
+        tcp_retrans
+      FROM order_metrics
+      WHERE timestamp >= CURRENT_DATE + TIME '08:00'
+        AND timestamp <  CURRENT_DATE + TIME '14:00'
+      ORDER BY timestamp ASC
+    `);
+
+    res.json(result.rows.map(row => ({
+      timestamp: parseFloat(row.timestamp),
+      broker: row.broker,
+      outcome: row.outcome,
+      total_ms: row.total_ms != null ? parseFloat(row.total_ms) : null,
+      sdk_local_ms: row.sdk_local_ms != null ? parseFloat(row.sdk_local_ms) : null,
+      ack_rtt_ms: row.ack_rtt_ms != null ? parseFloat(row.ack_rtt_ms) : null,
+      cancel_rtt_ms: row.cancel_rtt_ms != null ? parseFloat(row.cancel_rtt_ms) : null,
+      tcp_rtt_us: row.tcp_rtt_us,
+      tcp_retrans: row.tcp_retrans,
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Network probe breakdown: today's 08:00–14:00 window.
+readApp.get('/api/network-metrics/breakdown', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        EXTRACT(EPOCH FROM date_trunc('second', timestamp)) AS timestamp,
+        broker,
+        dns_ms,
+        tcp_handshake_ms,
+        tls_handshake_ms,
+        tls_handshake_resumed_ms,
+        resumption_supported,
+        error
+      FROM network_metrics
+      WHERE timestamp >= CURRENT_DATE + TIME '08:00'
+        AND timestamp <  CURRENT_DATE + TIME '14:00'
+      ORDER BY timestamp ASC
+    `);
+
+    res.json(result.rows.map(row => ({
+      timestamp: parseFloat(row.timestamp),
+      broker: row.broker,
+      dns_ms: row.dns_ms != null ? parseFloat(row.dns_ms) : null,
+      tcp_handshake_ms: row.tcp_handshake_ms != null ? parseFloat(row.tcp_handshake_ms) : null,
+      tls_handshake_ms: row.tls_handshake_ms != null ? parseFloat(row.tls_handshake_ms) : null,
+      tls_handshake_resumed_ms: row.tls_handshake_resumed_ms != null ? parseFloat(row.tls_handshake_resumed_ms) : null,
+      resumption_supported: row.resumption_supported,
+      error: row.error,
     })));
   } catch (err) {
     console.error(err);

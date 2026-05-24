@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Probe Metric - Dashboard</title>
+    <script src="https://unpkg.com/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/uplot@1.6.30/dist/uPlot.min.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 20px;
+            background: #f8fafc;
+            color: #1a202c;
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { color: #2c3e50; margin-bottom: 10px; }
+
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            margin-bottom: 24px;
+            display: flex;
+            gap: 24px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .chart-container {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            margin-bottom: 24px;
+        }
+
+        #chart, #tlsChart { display: flex; justify-content: center; align-items: center; }
+
+        .stats-container {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 24px;
+        }
+
+        .stat-item { text-align: center; padding: 16px; background: #f7fafc; border-radius: 8px; }
+        .stat-value { font-size: 24px; font-weight: bold; color: #2b6cb0; }
+        .stat-label { color: #4a5568; font-size: 14px; margin-top: 4px; }
+        .stat-sub { font-size: 12px; color: #718096; margin-top: 4px; }
+
+        .loading { text-align: center; padding: 40px; color: #7f8c8d; }
+        .time-range { color: #7f8c8d; font-size: 0.9em; }
+
+        .broker-picker { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .broker-picker .label { color: #4a5568; font-size: 0.9em; }
+        .broker-picker .pill {
+            padding: 4px 12px;
+            font-size: 0.9em;
+            border: 1px solid #cbd5e0;
+            border-radius: 999px;
+            cursor: pointer;
+            user-select: none;
+            background: white;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .broker-picker .pill:hover { background: #edf2f7; }
+        .broker-picker .pill.active {
+            border-color: #2b6cb0;
+            background: #ebf4ff;
+            font-weight: 600;
+        }
+
+        .chart-title { margin: 0 0 12px 0; color: #2c3e50; font-size: 16px; font-weight: 600; }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Network Probe Metric</h1>
+            <p>Trading hours 08:00–14:00 (UTC+8)</p>
+        </div>
+
+        <div class="controls">
+            <div class="broker-picker">
+                <span class="label">Broker:</span>
+                <div id="brokerPills"></div>
+            </div>
+            <div style="margin-left: auto;">
+                <span id="lastUpdate" class="time-range"></span>
+            </div>
+        </div>
+
+        <div class="stats-container" id="statsContainer"></div>
+
+        <div class="chart-container">
+            <div class="chart-title">DNS / TCP / TLS handshake</div>
+            <div id="loading" class="loading">Loading...</div>
+            <div id="chart" style="display: none;"></div>
+        </div>
+
+        <div class="chart-container">
+            <div class="chart-title">TLS cold vs warm (resumption)</div>
+            <div id="tlsChart"></div>
+        </div>
+    </div>
+
+    <script>
+        const CHART_WIDTH = 1280;
+        const CHART_HEIGHT = 480;
+        const REFRESH_INTERVAL_MS = 30000;
+        const WINDOW_START_HOUR = 8;
+        const WINDOW_END_HOUR = 14;
+
+        const COLORS = {
+            dns_ms:                    '#9b59b6',
+            tcp_handshake_ms:          '#3498db',
+            tls_handshake_ms:          '#e74c3c',
+            tls_handshake_resumed_ms:  '#2ecc71',
+        };
+
+        let stagesChart = null;
+        let tlsChart = null;
+        let refreshInterval = null;
+        let latestRawData = [];
+        let brokers = [];
+        let selectedBroker = null;
+
+        const taipeiTimeFormatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'Asia/Taipei',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+        });
+
+        function formatTime(epochSeconds) {
+            return taipeiTimeFormatter.format(new Date(epochSeconds * 1000));
+        }
+
+        function taipeiTodayAtHourEpoch(hour) {
+            const now = new Date();
+            const parts = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Taipei',
+                year: 'numeric', month: '2-digit', day: '2-digit',
+            }).formatToParts(now).reduce((acc, p) => {
+                if (p.type !== 'literal') acc[p.type] = p.value;
+                return acc;
+            }, {});
+            const utcMs = Date.UTC(+parts.year, +parts.month - 1, +parts.day, hour, 0, 0);
+            return Math.floor((utcMs - 8 * 3600 * 1000) / 1000);
+        }
+
+        function percentile(sortedAsc, p) {
+            if (sortedAsc.length === 0) return 0;
+            const idx = Math.min(sortedAsc.length - 1, Math.ceil(sortedAsc.length * p) - 1);
+            return sortedAsc[Math.max(0, idx)];
+        }
+
+        function mean(arr) {
+            if (arr.length === 0) return 0;
+            return arr.reduce((a, b) => a + b, 0) / arr.length;
+        }
+
+        async function fetchData() {
+            try {
+                const response = await fetch('/api/network-metrics/breakdown');
+                latestRawData = await response.json();
+
+                const brokerSet = new Set(latestRawData.map(r => r.broker));
+                brokers = Array.from(brokerSet).sort();
+                if (!selectedBroker || !brokerSet.has(selectedBroker)) {
+                    selectedBroker = brokers[0] || null;
+                }
+
+                renderBrokerPills();
+                render();
+                updateLastUpdate();
+            } catch (err) {
+                console.error('Failed to fetch network metrics:', err);
+            }
+        }
+
+        function renderBrokerPills() {
+            const container = document.getElementById('brokerPills');
+            container.innerHTML = '';
+            brokers.forEach(b => {
+                const pill = document.createElement('span');
+                pill.className = 'pill' + (b === selectedBroker ? ' active' : '');
+                pill.textContent = b;
+                pill.addEventListener('click', () => {
+                    selectedBroker = b;
+                    renderBrokerPills();
+                    render();
+                });
+                container.appendChild(pill);
+            });
+        }
+
+        function render() {
+            const rows = latestRawData.filter(r => r.broker === selectedBroker);
+            renderStats(rows);
+            renderStagesChart(rows);
+            renderTlsChart(rows);
+        }
+
+        function renderStagesChart(rows) {
+            const container = document.getElementById('chart');
+            if (stagesChart) stagesChart.destroy();
+
+            const start = taipeiTodayAtHourEpoch(WINDOW_START_HOUR);
+            const end = taipeiTodayAtHourEpoch(WINDOW_END_HOUR);
+
+            const okRows = rows.filter(r => r.dns_ms != null);
+            const timestamps = okRows.map(r => r.timestamp);
+            const dns = okRows.map(r => r.dns_ms);
+            const tcp = okRows.map(r => r.tcp_handshake_ms);
+            const tls = okRows.map(r => r.tls_handshake_ms);
+
+            const plotData = [timestamps, dns, tcp, tls];
+
+            const opts = {
+                title: `${selectedBroker || ''} — handshake breakdown`,
+                width: CHART_WIDTH,
+                height: CHART_HEIGHT,
+                series: [
+                    { label: 'Time' },
+                    { label: 'dns_ms',           stroke: COLORS.dns_ms,           width: 1.5, scale: 'ms' },
+                    { label: 'tcp_handshake_ms', stroke: COLORS.tcp_handshake_ms, width: 2,   scale: 'ms' },
+                    { label: 'tls_handshake_ms', stroke: COLORS.tls_handshake_ms, width: 2,   scale: 'ms' },
+                ],
+                scales: {
+                    x: { range: [start, end] },
+                    ms: { auto: true },
+                },
+                axes: [
+                    { values: (self, ticks) => ticks.map(formatTime) },
+                    { scale: 'ms', values: (self, ticks) => ticks.map(t => `${t.toFixed(1)}ms`) },
+                ],
+                padding: [20, 40, 20, 60],
+            };
+
+            stagesChart = new uPlot(opts, plotData, container);
+            document.getElementById('loading').style.display = 'none';
+            container.style.display = 'block';
+        }
+
+        function renderTlsChart(rows) {
+            const container = document.getElementById('tlsChart');
+            if (tlsChart) tlsChart.destroy();
+
+            const start = taipeiTodayAtHourEpoch(WINDOW_START_HOUR);
+            const end = taipeiTodayAtHourEpoch(WINDOW_END_HOUR);
+
+            const okRows = rows.filter(r => r.tls_handshake_ms != null);
+            const timestamps = okRows.map(r => r.timestamp);
+            const cold = okRows.map(r => r.tls_handshake_ms);
+            const warm = okRows.map(r => r.tls_handshake_resumed_ms);
+
+            const plotData = [timestamps, cold, warm];
+
+            const opts = {
+                title: `${selectedBroker || ''} — TLS cold vs warm`,
+                width: CHART_WIDTH,
+                height: CHART_HEIGHT,
+                series: [
+                    { label: 'Time' },
+                    { label: 'cold (full handshake)', stroke: COLORS.tls_handshake_ms,         width: 2,   scale: 'ms' },
+                    { label: 'warm (resumed)',        stroke: COLORS.tls_handshake_resumed_ms, width: 2,   scale: 'ms' },
+                ],
+                scales: {
+                    x: { range: [start, end] },
+                    ms: { auto: true },
+                },
+                axes: [
+                    { values: (self, ticks) => ticks.map(formatTime) },
+                    { scale: 'ms', values: (self, ticks) => ticks.map(t => `${t.toFixed(1)}ms`) },
+                ],
+                padding: [20, 40, 20, 60],
+            };
+
+            tlsChart = new uPlot(opts, plotData, container);
+        }
+
+        function renderStats(rows) {
+            const stats = document.getElementById('statsContainer');
+
+            const okRows = rows.filter(r => r.dns_ms != null);
+            const errorRows = rows.filter(r => r.error != null);
+            const resumedRows = rows.filter(r => r.resumption_supported === true);
+            const resumptionEligible = rows.filter(r => r.resumption_supported != null);
+
+            const dnsP50 = percentile([...okRows.map(r => r.dns_ms)].sort((a, b) => a - b), 0.5);
+            const tcpP50 = percentile([...okRows.map(r => r.tcp_handshake_ms)].sort((a, b) => a - b), 0.5);
+            const tlsP50 = percentile([...okRows.map(r => r.tls_handshake_ms)].sort((a, b) => a - b), 0.5);
+
+            const resumptionRate = resumptionEligible.length > 0
+                ? (100 * resumedRows.length / resumptionEligible.length).toFixed(1) + '%'
+                : '—';
+            const errorRate = rows.length > 0
+                ? (100 * errorRows.length / rows.length).toFixed(2) + '%'
+                : '—';
+
+            stats.innerHTML = `
+                <div class="stat-item">
+                    <div class="stat-value">${dnsP50.toFixed(2)}ms</div>
+                    <div class="stat-label">DNS (p50)</div>
+                    <div class="stat-sub">${okRows.length} samples</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${tcpP50.toFixed(2)}ms</div>
+                    <div class="stat-label">TCP handshake (p50)</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${tlsP50.toFixed(2)}ms</div>
+                    <div class="stat-label">TLS handshake (p50)</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${resumptionRate}</div>
+                    <div class="stat-label">TLS resumption rate</div>
+                    <div class="stat-sub">${resumedRows.length} / ${resumptionEligible.length}</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${errorRate}</div>
+                    <div class="stat-label">Probe error rate</div>
+                    <div class="stat-sub">${errorRows.length} / ${rows.length}</div>
+                </div>
+            `;
+        }
+
+        function updateLastUpdate() {
+            const el = document.getElementById('lastUpdate');
+            el.textContent = 'Last update: ' + new Date().toLocaleTimeString('en-US', { hour12: false });
+        }
+
+        fetchData();
+        refreshInterval = setInterval(fetchData, REFRESH_INTERVAL_MS);
+    </script>
+</body>
+
+</html>
